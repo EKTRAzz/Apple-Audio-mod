@@ -148,6 +148,14 @@ OSStatus PostRenderNotifyCallback(void *inRefCon,
     return noErr;
 }
 
+inline bool IsOurWrappedCallback(AURenderCallback proc) {
+    return reinterpret_cast<const void *>(proc) == reinterpret_cast<const void *>(&WrappedRenderCallback);
+}
+
+inline AURenderCallback AsAURenderCallback(OSStatus (*fn)(void *, AudioUnitRenderActionFlags *, const AudioTimeStamp *, UInt32, UInt32, AudioBufferList *)) {
+    return reinterpret_cast<AURenderCallback>(fn);
+}
+
 OSStatus hooked_AudioUnitSetProperty(AudioUnit inUnit,
                                      AudioUnitPropertyID inID,
                                      AudioUnitScope inScope,
@@ -169,7 +177,7 @@ OSStatus hooked_AudioUnitSetProperty(AudioUnit inUnit,
                     it->second->originalRefCon = nullptr;
                     it->second->hasWrappedCallback.store(false, std::memory_order_release);
                 }
-            } else if (cb->inputProc != WrappedRenderCallback) {
+            } else if (!IsOurWrappedCallback(cb->inputProc)) {
                 AudioUnitHookCtx *ctx = nullptr;
                 bool needRemoveNotify = false;
                 {
@@ -184,9 +192,9 @@ OSStatus hooked_AudioUnitSetProperty(AudioUnit inUnit,
                     }
                 }
                 if (needRemoveNotify) {
-                    AudioUnitRemoveRenderNotify(inUnit, PostRenderNotifyCallback, ctx);
+                    AudioUnitRemoveRenderNotify(inUnit, AsAURenderCallback(&PostRenderNotifyCallback), ctx);
                 }
-                AURenderCallbackStruct wrapped{WrappedRenderCallback, ctx};
+                AURenderCallbackStruct wrapped{AsAURenderCallback(&WrappedRenderCallback), ctx};
                 return orig_AudioUnitSetProperty(inUnit, inID, inScope, inElement, &wrapped, sizeof(wrapped));
             }
         } else if (inID == kAudioUnitProperty_StreamFormat &&
@@ -216,7 +224,7 @@ OSStatus hooked_AUGraphSetNodeInputCallback(AUGraph inGraph,
         AudioUnit unit = nullptr;
         if (AUGraphNodeInfo(inGraph, inDestNode, nullptr, &unit) == noErr &&
             IsTerminalOutputUnit(unit) &&
-            inInputCallback->inputProc != WrappedRenderCallback) {
+            !IsOurWrappedCallback(inInputCallback->inputProc)) {
             AudioUnitHookCtx *ctx = nullptr;
             bool needRemoveNotify = false;
             {
@@ -231,9 +239,9 @@ OSStatus hooked_AUGraphSetNodeInputCallback(AUGraph inGraph,
                 }
             }
             if (needRemoveNotify) {
-                AudioUnitRemoveRenderNotify(unit, PostRenderNotifyCallback, ctx);
+                AudioUnitRemoveRenderNotify(unit, AsAURenderCallback(&PostRenderNotifyCallback), ctx);
             }
-            AURenderCallbackStruct wrapped{WrappedRenderCallback, ctx};
+            AURenderCallbackStruct wrapped{AsAURenderCallback(&WrappedRenderCallback), ctx};
             return orig_AUGraphSetNodeInputCallback(inGraph, inDestNode, inDestInputNumber, &wrapped);
         }
     }
@@ -257,7 +265,7 @@ OSStatus hooked_AudioUnitInitialize(AudioUnit inUnit) {
             }
         }
         if (needAttachNotify) {
-            AudioUnitAddRenderNotify(inUnit, PostRenderNotifyCallback, ctx);
+            AudioUnitAddRenderNotify(inUnit, AsAURenderCallback(&PostRenderNotifyCallback), ctx);
         }
     }
     return st;
@@ -276,7 +284,7 @@ OSStatus hooked_AudioComponentInstanceDispose(AudioComponentInstance inInstance)
         }
         if (removed) {
             if (removed->hasRenderNotify) {
-                AudioUnitRemoveRenderNotify(static_cast<AudioUnit>(inInstance), PostRenderNotifyCallback, removed.get());
+                AudioUnitRemoveRenderNotify(static_cast<AudioUnit>(inInstance), AsAURenderCallback(&PostRenderNotifyCallback), removed.get());
             }
             PipelineCoordinator::UnregisterStream(AudioPipelineKind::AudioUnit);
         }
