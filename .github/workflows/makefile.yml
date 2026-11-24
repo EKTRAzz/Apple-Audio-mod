@@ -1,27 +1,38 @@
-name: Makefile CI
+name: Build iOS Spatial Audio dylib
 
 on:
   push:
-    branches: [ "main" ]
+    branches: [ main, master ]
   pull_request:
-    branches: [ "main" ]
+  workflow_dispatch:
+    inputs:
+      headroom_db:
+        description: 'Headroom gain in dB (e.g. -2.5f, -4.0f, 0.0f)'
+        required: false
+        default: '-2.5f'
 
 jobs:
   build:
-
-    runs-on: ubuntu-latest
-
+    runs-on: macos-latest
     steps:
-    - uses: actions/checkout@v4
+      - name: Checkout repository
+        uses: actions/checkout@v4
 
-    - name: configure
-      run: ./configure
+      - name: Fetch facebook/fishhook
+        run: |
+          mkdir -p third_party
+          git clone --depth 1 https://github.com/facebook/fishhook.git third_party/fishhook
 
-    - name: Install dependencies
-      run: make
+      - name: Build Matrix and Front dylibs (iOS arm64)
+        env:
+          HEADROOM_DB: ${{ github.event.inputs.headroom_db || '-2.5f' }}
+        run: |
+          make all HEADROOM_DB="$HEADROOM_DB"
+          ls -lh build/
+          file build/*.dylib
 
-    - name: Run check
-      run: make check
-
-    - name: Run distcheck
-      run: make distcheck
+      - name: Upload built dylibs
+        uses: actions/upload-artifact@v4
+        with:
+          name: SpatialDSP-ApplePro2-iOS-arm64
+          path: build/*.dylib
