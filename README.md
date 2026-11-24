@@ -1,44 +1,47 @@
-# HeSuVi-iOS (Headphone Surround Virtualizer for iOS)
+# SpatialAudioMultiHook (iOS arm64 `.dylib`)
 
-ไลบรารี `.dylib` สำหรับนำฟังก์ชันจำลองมิติเสียงรอบทิศทาง 7.1 ของ **HeSuVi (Equalizer APO)** มาทำงานบน iPhone/iPad โดยเฉพาะ สามารถฉีด (Inject) เข้าแอปเล่นเพลงยอดนิยมอย่าง **Spotify** หรือ **YouTube Music** ผ่านโปรแกรม Sign บนเครื่อง เช่น **KSign**, TrollStore, หรือ Esign
+ตัวประมวลผลเสียง Spatial Audio แบบเรียลไทม์สำหรับ iOS (`arm64`, iOS 15.0+) ที่จำลองการทำงานของ **HeSuVi (`#2.0.0.1`) บน PC** จากไฟล์ `Apple_Pro2_Stereo.wav` (`48 kHz`, 14 แชนเนล, `8,400 samples` ครบไม่ตัดหาง) พร้อมระบบ **Single-Winner Multi-Pipeline Hook** เพื่อจับท่อเสียงหลักของแอปโดย **ไม่ทับไลน์กัน**
 
----
+## จุดเด่นหลัก
 
-## 🌟 ฟีเจอร์หลัก (ตรงตามหน้าจอ HeSuVi บน PC)
+1. **ตรงกับ HeSuVi บน PC มากที่สุด**
+   - ใช้สูตร `matrix.txt` + 14-channel convolution (`hesuvi.txt`) + `mix.txt` ของ HeSuVi PC แท้ๆ ยุบรวมเชิงเส้นเป็น True-Stereo 4 แชนเนล (`LL`, `LR`, `RL`, `RR`) ด้วยความคลาดเคลื่อนระดับ `1e-7`
+   - เก็บความยาว Impulse Response ครบทั้ง **`8,400 samples`** (0.175 วินาที ไม่ตัดปลายหางที่ 8192) บน `FFT_N = 16384` แบบ **Zero-Added-Latency Overlap-Save** ผ่าน `Accelerate` (`vDSP_fft_zrip`)
+   - แก้การคูณ Bin 0 (DC/Nyquist) ของ `vDSP_fft_zrip` แยกต่างหาก และตั้งค่า Headroom เริ่มต้นที่ **`-2.5 dB`** (รองรับ peak สูงสุด `+2.41 dB` ของ IR โดยไม่ลดความดังจนเบากว่า PC พร้อม Soft Clipper `tanhf` เหนือ `±0.985`)
+   - สร้างได้ 2 โหมด:
+     - `SpatialDSP_ApplePro2_Matrix.dylib`: โหมด **Matrix Upmix** (ตรงกับ HeSuVi บน PC เมื่อเปิด Stereo Upmix)
+     - `SpatialDSP_ApplePro2_Front.dylib`: โหมด **Front 1:1** (ตรงกับ HeSuVi บน PC เมื่อปิด Upmix ใช้เฉพาะ `FL/FR`)
 
-1. **Matrix Upmix (Stereo to 7.1)**:
-   - แปลงสัญญาณเสียงเพลง 2 แชนแนล (Stereo 2.0) จาก Spotify / YouTube Music ให้กระจายออกเป็น 7.1 แชนแนลเสมือนรอบทิศทาง
-   - ตัวเลือก Content Format: **Automatic**, **Stereo**, หรือ **5.1**
-2. **HRIR Convolution Engine**:
-   - ใช้ **Apple Accelerate Framework (`vDSP`)** ในการทำ Fast FIR Convolution ระดับฮาร์ดแวร์ กินแบตต่ำและไม่มีอาการหน่วงหรือกระตุก (Near Zero Latency)
-   - จำลองมิติเสียงตามโปรไฟล์ **AirPods Pro 2 (Spatial / Stereo)**, Apple Spatial, Dolby Atmos
-   - มีปุ่มเลือกนำเข้าไฟล์ HRIR `.wav` (14-channel) เพิ่มเติมจากแอป **Files (ไฟล์)** ได้เอง
-3. **Volume Adjustment Sliders (0% - 200%)**:
-   - ปรับระดับความดังแยกตามตำแหน่งลำโพงเสมือนได้อิสระ: **Master**, **Center**, **Front**, **Side**, **Rear**, และ **LFE (Subwoofer)**
-4. **Floating In-App UI**:
-   - ปุ่มลอยรูปหูฟัง `🎧` สามารถลากย้ายตำแหน่งได้รอบหน้าจอ
-   - แตะเพื่อเปิดแผงควบคุม ปรับค่าเสร็จกด **✕** เพื่อปิดซ่อนหายไปได้อย่างสมบูรณ์
-   - หากต้องการซ่อนปุ่มลอยไม่ให้กวนสายตา สามารถแตะหน้าจอด้วย **3 นิ้วพร้อมกัน** เพื่อเปิด/ปิดการแสดงผลปุ่มลอยได้
+2. **ระบบ Single-Winner Multi-Pipeline Hook (ไม่ทับไลน์กัน)**
+   - ติดตั้ง Hook ครอบคลุม 3 ท่อเสียงหลักของแอป iOS:
+     1. **AudioUnit / AUGraph / AVAudioEngine** (`RemoteIO` และ `VoiceProcessingIO`) — ผ่าน `fishhook` (`AudioUnitSetProperty`, `AUGraphSetNodeInputCallback`, `AudioUnitInitialize`, `AudioComponentInstanceDispose`)
+     2. **AudioQueue (Linear PCM)** — ผ่าน `fishhook` (`AudioQueueNewOutput*`, `AudioQueueEnqueueBuffer*`, `AudioQueueDispose`)
+     3. **AVPlayer / AVQueuePlayer** — ผ่าน ObjC Swizzling แนบ `MTAudioProcessingTap` (ข้าม FairPlay DRM และรายการที่มี `audioMix` เดิมอัตโนมัติ)
+   - **Exclusive Winner Lock (`PipelineCoordinator`):** ท่อไหนที่ได้รับเสียงจริงก่อนจะเป็น **ท่อหลักเพียงท่อเดียว** ท่ออื่นทั้งหมดจะปล่อยผ่าน (Bypass) อัตโนมัติทันที และหากท่อหลักปิดสตรีมหรือเงียบเกิน `1.5 วินาที` ระบบจะปลดล็อกให้ท่อใหม่รับช่วงต่อได้โดยไม่ชนกัน
 
----
+3. **Auto-Bypass อุปกรณ์แบบ Lock-Free**
+   - ฟัง `AVAudioSessionRouteChangeNotification` แล้วเก็บสถานะใน `std::atomic<bool>` (ไม่เรียก ObjC บนเธรดเสียงจริง)
+   - ทำงานเฉพาะเมื่อต่อ **หูฟังมีสาย, Bluetooth A2DP/LE หรือ USB DAC** และข้ามอัตโนมัติเมื่อออก **ลำโพงเครื่อง, Receiver, CarPlay, AirPlay, HDMI, Bluetooth HFP หรือโหมด Voice/Video Call**
 
-## 🚀 วิธีการ Build อัตโนมัติบน GitHub (ไม่ต้องมี Mac)
+## วิธี Build เป็นไฟล์ `.dylib`
 
-โปรเจกต์นี้ตั้งค่า **GitHub Actions CI/CD** ไว้เรียบร้อยแล้ว:
+### วิธีที่ 1: ใช้ GitHub Actions (แนะนำ — ไม่ต้องมีเครื่อง Mac)
+1. แตกไฟล์ `.zip` นี้แล้วอัปโหลดขึ้น GitHub Repository ของคุณ
+2. เปิดแท็บ **Actions** -> เลือก workflow **Build iOS Spatial Audio dylib** -> กด **Run workflow** (ปรับค่า `headroom_db` ได้ เช่น `-2.5f`, `-4.0f`, หรือ `0.0f`)
+3. ดาวน์โหลดไฟล์ `SpatialDSP_ApplePro2_Matrix.dylib` และ `SpatialDSP_ApplePro2_Front.dylib` จากส่วน **Artifacts**
 
-1. นำโฟลเดอร์โปรเจกต์นี้ไป Push ขึ้น GitHub Repository ส่วนตัวของคุณ
-2. ไปที่แท็บ **Actions** บน GitHub
-3. เลือก Workflow **"Build HeSuVi iOS Dylib"** แล้วกดปุ่ม **"Run workflow"**
-4. เมื่อ Build เสร็จสมบูรณ์ (ใช้เวลาประมาณ 1-2 นาที) ให้คลิกเข้าไปที่ผลการรัน แล้วเลื่อนลงมาที่หัวข้อ **Artifacts**
-5. ดาวน์โหลดไฟล์ **`HeSuVi.dylib`** มาเก็บไว้ใน iPhone
+### วิธีที่ 2: คอมไพล์บนเครื่อง Mac
+```bash
+mkdir -p third_party
+git clone --depth 1 https://github.com/facebook/fishhook.git third_party/fishhook
+make all
+```
 
----
+### วิธีเปลี่ยนไฟล์ HRIR `.wav` ในอนาคต
+```bash
+python3 tools/wav_to_ir.py path/to/your_14ch_hesuvi.wav src/ir_data.h
+make all
+```
 
-## 📲 วิธีนำไปติดตั้งใน Spotify / YouTube Music ผ่าน KSign
-
-1. เปิดแอป **KSign** บน iPhone ของคุณ
-2. เพิ่มไฟล์ `.ipa` ของ **Spotify** หรือ **YouTube Music** เข้ามาใน KSign
-3. กดที่ตัวแอป เลือกหัวข้อ **Inject / Signature Settings** (การฉีดไลบรารี / ปรับแต่ง)
-4. เลือกเพิ่มไฟล์ **`HeSuVi.dylib`** เข้าไปในรายการ Dynamic Libraries
-5. ทำการ Sign ด้วยใบรับรองของคุณ (Certificate) แล้วกด **Install** ติดตั้งลงเครื่อง
-6. เปิดแอป Spotify หรือ YouTube Music จะมีไอคอนปุ่มลอย `🎧` ปรากฏขึ้นมา สามารถแตะเพื่อปรับตั้งค่าเสียง HeSuVi ได้ทันที!
+## ข้อจำกัดของ iOS Sandbox
+- สตรีมเสียงที่เข้ารหัส **FairPlay DRM** (เช่น Apple Music DRM, Netflix DRM), เสียงใน **WKWebView** (รันแยกโปรเซส), และ **Compressed AudioQueue** ที่ส่งไปถอดรหัสใน `mediaserverd` จะถูกปล่อยผ่านตามปกติเพื่อไม่ให้เสียงเงียบหรือแอปแครช
