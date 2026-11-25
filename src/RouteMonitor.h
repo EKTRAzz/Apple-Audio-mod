@@ -1,22 +1,50 @@
 #ifndef SPATIAL_ROUTE_MONITOR_H
 #define SPATIAL_ROUTE_MONITOR_H
 
-#include <stddef.h>
+#import <Foundation/Foundation.h>
 
 namespace spatial {
 
-// Lock-free AVAudioSession route monitor.
-// Observes AVAudioSessionRouteChangeNotification on background/main thread and caches an atomic flag
-// so real-time audio callbacks never call Objective-C or lock mutexes.
+enum class BypassReason : int {
+    None = 0,
+    VoiceOrVideoCall,
+    BuiltInSpeaker,
+    BuiltInReceiver,
+    CarPlay,
+    AirPlay,
+    HDMI,
+    BluetoothHFP,
+    UnsupportedOutput,
+    NoOutputRoute,
+};
+
+struct RouteSnapshot {
+    bool routeEligible = false;
+    BypassReason bypassReason = BypassReason::NoOutputRoute;
+    double sampleRate = 48000.0;
+    char routeLabel[48] = "Unknown";
+    char portName[96] = "";
+};
+
+extern NSString * const kRouteMonitorDidUpdateNotification;
+
+// Lock-free AVAudioSession route, mode, and hardware sample-rate monitor.
+// Safe to query from real-time audio render callbacks without ObjC calls or locks.
 class RouteMonitor {
 public:
     static void Initialize();
-    static bool ShouldProcessAudio();
-    static bool IsHeadphoneRouteActive();
-    static double CurrentSampleRate();
     static void RefreshNow();
-    // Thread-safe copy of current audio output port description (for UI display only, not RT audio).
-    static void GetRouteDescription(char *outBuf, size_t bufSize);
+
+    // Hardware/session route check only (lock-free).
+    static bool IsRouteEligible();
+
+    // Combined user-enabled && route-eligible check (lock-free).
+    static bool ShouldProcessAudio();
+
+    static double CurrentSampleRate();
+
+    // Detailed route snapshot for UI display (call on main/UI thread).
+    static RouteSnapshot GetSnapshot();
 };
 
 } // namespace spatial

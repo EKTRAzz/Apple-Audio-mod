@@ -122,7 +122,6 @@ public:
         const AudioStreamBasicDescription *inAsbd = CMAudioFormatDescriptionGetStreamBasicDescription(fmtDesc);
         if (!inAsbd) return nullptr;
 
-        PipelineCoordinator::RecordPipelineSeen(AudioPipelineKind::SampleBufferRenderer);
         std::lock_guard<std::mutex> lock(mutex_);
 
         if (inAsbd->mFormatID == kAudioFormatLinearPCM) {
@@ -228,7 +227,8 @@ private:
         if (asbd.mChannelsPerFrame != 2 || !IsSupportedPcmSampleRate(asbd.mSampleRate)) {
             return nullptr;
         }
-        if (!RouteMonitor::ShouldProcessAudio()) {
+        const bool wantSpatial = RouteMonitor::ShouldProcessAudio();
+        if (!dsp_ || !dsp_->NeedsProcessing(wantSpatial)) {
             return nullptr;
         }
 
@@ -308,9 +308,11 @@ private:
 
         if (retainedBlock) CFRelease(retainedBlock);
 
-        const uint32_t frames = dsp_->ProcessAudioBufferList(reinterpret_cast<AudioBufferList *>(&dstAbl),
+        dsp_->ProcessAudioBufferList(reinterpret_cast<AudioBufferList *>(&dstAbl),
                                      static_cast<uint32_t>(numSamples),
-                                     asbd);
+                                     asbd,
+                                     wantSpatial,
+                                     SpatialConfig::CurrentMode());
 
         CMSampleBufferRef outSb = nullptr;
         CMTime pts = CMSampleBufferGetPresentationTimeStamp(sb);
@@ -328,7 +330,6 @@ private:
             return nullptr;
         }
 
-        PipelineCoordinator::RecordPipelineProcessed(AudioPipelineKind::SampleBufferRenderer, asbd.mSampleRate, frames);
         CMPropagateAttachments(sb, outSb);
         return outSb;
     }
@@ -432,14 +433,16 @@ private:
             return nullptr;
         }
 
-        uint32_t frames = 0;
-        if (RouteMonitor::ShouldProcessAudio()) {
+        const bool wantSpatial = RouteMonitor::ShouldProcessAudio();
+        if (dsp_ && dsp_->NeedsProcessing(wantSpatial)) {
             ScopedDspGuard guard;
             if (guard.entered && PipelineCoordinator::TryAcquire(AudioPipelineKind::SampleBufferRenderer)) {
-                frames = dsp_->ProcessNonInterleavedFloat32(pcmL_.data(),
+                dsp_->ProcessNonInterleavedFloat32(pcmL_.data(),
                                                    pcmR_.data(),
                                                    static_cast<uint32_t>(pcmL_.size()),
-                                                   converterOutAsbd_.mSampleRate);
+                                                   converterOutAsbd_.mSampleRate,
+                                                   wantSpatial,
+                                                   SpatialConfig::CurrentMode());
             }
         }
 
@@ -485,7 +488,6 @@ private:
             return nullptr;
         }
 
-        PipelineCoordinator::RecordPipelineProcessed(AudioPipelineKind::SampleBufferRenderer, converterOutAsbd_.mSampleRate, frames);
         CMPropagateAttachments(sb, outSb);
         return outSb;
     }

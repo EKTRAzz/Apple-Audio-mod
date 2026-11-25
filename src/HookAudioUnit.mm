@@ -108,16 +108,18 @@ OSStatus WrappedRenderCallback(void *inRefCon,
     if (ioActionFlags && (*ioActionFlags & kAudioUnitRenderAction_OutputIsSilence)) {
         return status;
     }
-    PipelineCoordinator::RecordPipelineSeen(AudioPipelineKind::AudioUnit);
-    if (!RouteMonitor::ShouldProcessAudio()) {
+    const bool wantSpatial = RouteMonitor::ShouldProcessAudio();
+    if (!ctx->dsp || !ctx->dsp->NeedsProcessing(wantSpatial)) {
         return status;
     }
 
     ScopedDspGuard guard;
     if (guard.entered && PipelineCoordinator::TryAcquire(AudioPipelineKind::AudioUnit)) {
-        const AudioStreamBasicDescription asbd = EffectiveAsbd(ctx);
-        const uint32_t frames = ctx->dsp->ProcessAudioBufferList(ioData, inNumberFrames, asbd);
-        PipelineCoordinator::RecordPipelineProcessed(AudioPipelineKind::AudioUnit, asbd.mSampleRate, frames);
+        ctx->dsp->ProcessAudioBufferList(ioData,
+                                         inNumberFrames,
+                                         EffectiveAsbd(ctx),
+                                         wantSpatial,
+                                         SpatialConfig::CurrentMode());
     }
     return status;
 }
@@ -144,16 +146,18 @@ OSStatus PostRenderNotifyCallback(void *inRefCon,
     if (!ctx || !ctx->dsp || ctx->hasWrappedCallback.load(std::memory_order_acquire)) {
         return noErr;
     }
-    PipelineCoordinator::RecordPipelineSeen(AudioPipelineKind::AudioUnit);
-    if (!RouteMonitor::ShouldProcessAudio()) {
+    const bool wantSpatial = RouteMonitor::ShouldProcessAudio();
+    if (!ctx->dsp->NeedsProcessing(wantSpatial)) {
         return noErr;
     }
 
     ScopedDspGuard guard;
     if (guard.entered && PipelineCoordinator::TryAcquire(AudioPipelineKind::AudioUnit)) {
-        const AudioStreamBasicDescription asbd = EffectiveAsbd(ctx);
-        const uint32_t frames = ctx->dsp->ProcessAudioBufferList(ioData, inNumberFrames, asbd);
-        PipelineCoordinator::RecordPipelineProcessed(AudioPipelineKind::AudioUnit, asbd.mSampleRate, frames);
+        ctx->dsp->ProcessAudioBufferList(ioData,
+                                         inNumberFrames,
+                                         EffectiveAsbd(ctx),
+                                         wantSpatial,
+                                         SpatialConfig::CurrentMode());
     }
     return noErr;
 }

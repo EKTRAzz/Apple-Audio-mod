@@ -66,18 +66,21 @@ void TapProcess(MTAudioProcessingTapRef tap,
     if (status != noErr || !bufferListInOut || !numberFramesOut || *numberFramesOut <= 0) {
         return;
     }
-    PipelineCoordinator::RecordPipelineSeen(AudioPipelineKind::AVPlayer);
-    if (!RouteMonitor::ShouldProcessAudio()) {
-        return;
-    }
-
     auto *ctx = static_cast<AVPlayerTapCtx *>(MTAudioProcessingTapGetStorage(tap));
     if (!ctx || !ctx->dsp) return;
 
+    const bool wantSpatial = RouteMonitor::ShouldProcessAudio();
+    if (!ctx->dsp->NeedsProcessing(wantSpatial)) {
+        return;
+    }
+
     ScopedDspGuard guard;
     if (guard.entered && PipelineCoordinator::TryAcquire(AudioPipelineKind::AVPlayer)) {
-        const uint32_t frames = ctx->dsp->ProcessAudioBufferList(bufferListInOut, static_cast<uint32_t>(*numberFramesOut), ctx->asbd);
-        PipelineCoordinator::RecordPipelineProcessed(AudioPipelineKind::AVPlayer, ctx->asbd.mSampleRate, frames);
+        ctx->dsp->ProcessAudioBufferList(bufferListInOut,
+                                         static_cast<uint32_t>(*numberFramesOut),
+                                         ctx->asbd,
+                                         wantSpatial,
+                                         SpatialConfig::CurrentMode());
     }
 }
 

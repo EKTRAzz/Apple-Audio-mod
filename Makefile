@@ -41,24 +41,24 @@ FRAMEWORKS := \
 
 SRCS_MM := \
 	src/PipelineCoordinator.mm \
+	src/SpatialConfig.mm \
 	src/RouteMonitor.mm \
 	src/SpatialEngine.mm \
+	src/OverlayUI.mm \
 	src/HookAudioUnit.mm \
 	src/HookAudioQueue.mm \
 	src/HookAVPlayer.mm \
 	src/HookSampleBufferRenderer.mm \
-	src/SpatialOverlay.mm \
 	src/Entry.mm
 
 FISHHOOK_C := $(FISHHOOK_DIR)/fishhook.c
 
 OUT_DIR := build
-TARGET_MATRIX := $(OUT_DIR)/SpatialDSP_ApplePro2_Matrix.dylib
-TARGET_FRONT  := $(OUT_DIR)/SpatialDSP_ApplePro2_Front.dylib
+TARGET  := $(OUT_DIR)/SpatialDSP_ApplePro2.dylib
 
-.PHONY: all matrix front clean ir
+.PHONY: all clean ir
 
-all: matrix front
+all: $(TARGET)
 
 $(OUT_DIR):
 	mkdir -p $(OUT_DIR)
@@ -66,18 +66,9 @@ $(OUT_DIR):
 $(OUT_DIR)/fishhook.o: $(FISHHOOK_C) | $(OUT_DIR)
 	$(CC) $(CFLAGS) -c $(FISHHOOK_C) -o $@
 
-matrix: $(TARGET_MATRIX)
-$(TARGET_MATRIX): $(SRCS_MM) src/ir_data.h $(OUT_DIR)/fishhook.o | $(OUT_DIR)
-	$(CXX) $(CXXFLAGS) -DSPATIAL_MODE=1 -dynamiclib \
-		-install_name @rpath/SpatialDSP_ApplePro2_Matrix.dylib \
-		$(SRCS_MM) $(OUT_DIR)/fishhook.o \
-		$(FRAMEWORKS) -o $@
-	codesign --force --sign - $@
-
-front: $(TARGET_FRONT)
-$(TARGET_FRONT): $(SRCS_MM) src/ir_data.h $(OUT_DIR)/fishhook.o | $(OUT_DIR)
-	$(CXX) $(CXXFLAGS) -DSPATIAL_MODE=2 -dynamiclib \
-		-install_name @rpath/SpatialDSP_ApplePro2_Front.dylib \
+$(TARGET): $(SRCS_MM) src/ir_data.h $(OUT_DIR)/fishhook.o | $(OUT_DIR)
+	$(CXX) $(CXXFLAGS) -dynamiclib \
+		-install_name @rpath/SpatialDSP_ApplePro2.dylib \
 		$(SRCS_MM) $(OUT_DIR)/fishhook.o \
 		$(FRAMEWORKS) -o $@
 	codesign --force --sign - $@

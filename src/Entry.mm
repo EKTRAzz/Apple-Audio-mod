@@ -1,7 +1,7 @@
-#include "PipelineCoordinator.h"
+#include "OverlayUI.h"
 #include "RouteMonitor.h"
+#include "SpatialConfig.h"
 #include "SpatialEngine.h"
-#include "SpatialOverlay.h"
 
 #ifndef ENABLE_HOOK_AUDIOUNIT
 #define ENABLE_HOOK_AUDIOUNIT 1
@@ -32,16 +32,16 @@ void InstallSampleBufferRendererHook();
 
 __attribute__((constructor))
 static void SpatialAudioMultiHookInit() {
-    // 0. Load persisted user preferences (Master ON/OFF, Preferred Pipeline, Force Route).
-    spatial::PipelineCoordinator::LoadSettings();
+    // 1. Load persisted user preferences (enabled state, Matrix/Front mode, floating button state).
+    spatial::SpatialConfig::Initialize();
 
-    // 1. Pre-compute 48 kHz & 44.1 kHz True-Stereo HRIR FFT spectra.
+    // 2. Pre-compute 48 kHz & 44.1 kHz Matrix + Front True-Stereo HRIR FFT spectra.
     spatial::InitializeSharedSpectra();
 
-    // 2. Start lock-free AVAudioSession route & mode observer.
+    // 3. Start lock-free AVAudioSession route & mode observer.
     spatial::RouteMonitor::Initialize();
 
-    // 3. Install multi-pipeline hooks (coordinated by Single-Winner Exclusive Lock).
+    // 4. Install multi-pipeline hooks (coordinated by Single-Winner Exclusive Lock).
 #if ENABLE_HOOK_AUDIOUNIT
     spatial::InstallAudioUnitHook();
 #endif
@@ -55,7 +55,7 @@ static void SpatialAudioMultiHookInit() {
     spatial::InstallSampleBufferRendererHook();
 #endif
 
-    // 4. Install draggable floating status & pipeline-selector overlay window.
+    // 5. Install in-app floating control panel UI.
 #if ENABLE_OVERLAY_UI
     spatial::InstallOverlayUI();
 #endif

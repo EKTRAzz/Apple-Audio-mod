@@ -1,18 +1,22 @@
 #ifndef SPATIAL_ENGINE_H
 #define SPATIAL_ENGINE_H
 
+#include "SpatialConfig.h"
+
 #include <AudioToolbox/AudioToolbox.h>
+#include <atomic>
 #include <stdint.h>
 
 namespace spatial {
 
-// Pre-compute shared 48 kHz and 44.1 kHz True-Stereo HRIR FFT spectra once at load time.
+// Pre-compute shared 48 kHz and 44.1 kHz Matrix & Front True-Stereo HRIR FFT spectra once at load time.
 void InitializeSharedSpectra();
 
 // Per-stream Overlap-Save FFT True-Stereo Convolver (zero added latency, zero RT heap allocations).
 // Implements exact PC HeSuVi (#2.0.0.1) convolution math:
 //   OutL = (L * LL) + (R * RL)
 //   OutR = (L * LR) + (R * RR)
+// Supports click-free ~10 ms crossfades on On/Off bypass and Matrix/Front mode transitions.
 class SpatialStreamProcessor {
 public:
     SpatialStreamProcessor();
@@ -21,36 +25,89 @@ public:
     SpatialStreamProcessor(const SpatialStreamProcessor&) = delete;
     SpatialStreamProcessor& operator=(const SpatialStreamProcessor&) = delete;
 
-    // Reset overlap history (call on sample rate change or discontinuity).
+    // Reset overlap history and transition state (call on sample rate change or discontinuity).
     void Reset();
 
+    // True when spatial audio is wanted OR a short fade-out to dry bypass is still completing.
+    bool NeedsProcessing(bool wantSpatial) const;
+
     // Process stereo Float32 non-interleaved buffers in-place.
-    uint32_t ProcessNonInterleavedFloat32(float *left, float *right, uint32_t frameCount, double sampleRate);
+    void ProcessNonInterleavedFloat32(float *left,
+                                      float *right,
+                                      uint32_t frameCount,
+                                      double sampleRate,
+                                      bool wantSpatial = true,
+                                      SpatialMode desiredMode = SpatialMode::Matrix);
 
     // Process stereo Float32 interleaved buffer in-place.
-    uint32_t ProcessInterleavedFloat32(float *interleaved, uint32_t frameCount, double sampleRate);
+    void ProcessInterleavedFloat32(float *interleaved,
+                                   uint32_t frameCount,
+                                   double sampleRate,
+                                   bool wantSpatial = true,
+                                   SpatialMode desiredMode = SpatialMode::Matrix);
 
     // Process stereo Int16 interleaved buffer in-place.
-    uint32_t ProcessInterleavedInt16(int16_t *interleaved, uint32_t frameCount, double sampleRate);
+    void ProcessInterleavedInt16(int16_t *interleaved,
+                                 uint32_t frameCount,
+                                 double sampleRate,
+                                 bool wantSpatial = true,
+                                 SpatialMode desiredMode = SpatialMode::Matrix);
 
     // Process stereo Int16 non-interleaved buffers in-place.
-    uint32_t ProcessNonInterleavedInt16(int16_t *left, int16_t *right, uint32_t frameCount, double sampleRate);
+    void ProcessNonInterleavedInt16(int16_t *left,
+                                    int16_t *right,
+                                    uint32_t frameCount,
+                                    double sampleRate,
+                                    bool wantSpatial = true,
+                                    SpatialMode desiredMode = SpatialMode::Matrix);
 
     // Process stereo Int32 interleaved buffer in-place.
-    uint32_t ProcessInterleavedInt32(int32_t *interleaved, uint32_t frameCount, double sampleRate);
+    void ProcessInterleavedInt32(int32_t *interleaved,
+                                 uint32_t frameCount,
+                                 double sampleRate,
+                                 bool wantSpatial = true,
+                                 SpatialMode desiredMode = SpatialMode::Matrix);
 
     // Process stereo Int32 non-interleaved buffers in-place.
-    uint32_t ProcessNonInterleavedInt32(int32_t *left, int32_t *right, uint32_t frameCount, double sampleRate);
+    void ProcessNonInterleavedInt32(int32_t *left,
+                                    int32_t *right,
+                                    uint32_t frameCount,
+                                    double sampleRate,
+                                    bool wantSpatial = true,
+                                    SpatialMode desiredMode = SpatialMode::Matrix);
 
     // Convenience helper for CoreAudio AudioBufferList (handles Float32, Int16, and Int32 interleaved/non-interleaved).
-    uint32_t ProcessAudioBufferList(AudioBufferList *ioData,
+    void ProcessAudioBufferList(AudioBufferList *ioData,
                                 uint32_t frameCount,
-                                const AudioStreamBasicDescription &asbd);
+                                const AudioStreamBasicDescription &asbd,
+                                bool wantSpatial = true,
+                                SpatialMode desiredMode = SpatialMode::Matrix);
 
 private:
-    uint32_t ProcessChunk(float *left, float *right, uint32_t chunkFrames, bool is44k);
+    bool PrepareForStream(double sampleRate, bool &outIs44k, bool wantSpatial, SpatialMode desiredMode);
+    uint32_t NextChunkSize(uint32_t remaining, bool wantSpatial) const;
+    void ProcessChunk(float *left, float *right, uint32_t chunkFrames, bool is44k, bool wantSpatial);
+    void ConvolveToTimeDomain(const float *xLRe,
+                              const float *xLIm,
+                              const float *xRRe,
+                              const float *xRIm,
+                              bool is44k,
+                              SpatialMode mode);
+
+    template <typename LoadFn, typename StoreFn>
+    void ProcessFormatted(uint32_t frameCount,
+                          double sampleRate,
+                          bool wantSpatial,
+                          SpatialMode desiredMode,
+                          LoadFn &&loadChunk,
+                          StoreFn &&storeChunk);
 
     double lastSampleRate_ = 0.0;
+    std::atomic<bool> wetActive_{false};
+    float wetGain_ = 0.0f;
+    SpatialMode activeMode_ = SpatialMode::Matrix;
+    SpatialMode prevMode_ = SpatialMode::Matrix;
+    uint32_t modeFadeRemaining_ = 0;
 
     // Overlap-Save history of last SPATIAL_IR_LEN samples per channel.
     float *histL_ = nullptr;
@@ -73,6 +130,10 @@ private:
     // Scratch de-interleave buffers (for Float32/Int16/Int32 streams).
     float *deintL_ = nullptr;
     float *deintR_ = nullptr;
+
+    // Scratch crossfade buffers (size kCrossfadeFrames) for click-free Matrix <-> Front switching.
+    float *fadeOldL_ = nullptr;
+    float *fadeOldR_ = nullptr;
 };
 
 } // namespace spatial

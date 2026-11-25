@@ -206,21 +206,18 @@ def main():
         f.write("#define SPATIAL_FFT_LOG2 14\n")
         f.write("#define SPATIAL_FFT_N 16384\n\n")
 
-        f.write("#if SPATIAL_MODE == 1\n")
         f.write("// Mode 1: PC HeSuVi Stereo Matrix Upmix (matrix.txt + 14-ch conv + mix.txt)\n")
         for k in ("LL", "LR", "RL", "RR"):
-            f.write(format_c_array(f"kIR48_{k}", mat_48[k]) + "\n\n")
+            f.write(format_c_array(f"kIR48_Matrix_{k}", mat_48[k]) + "\n\n")
         for k in ("LL", "LR", "RL", "RR"):
-            f.write(format_c_array(f"kIR44_{k}", mat_44[k]) + "\n\n")
-        f.write("#elif SPATIAL_MODE == 2\n")
+            f.write(format_c_array(f"kIR44_Matrix_{k}", mat_44[k]) + "\n\n")
+
         f.write("// Mode 2: PC HeSuVi Pure Front Left/Right (FL/FR 1:1 True-Stereo)\n")
         for k in ("LL", "LR", "RL", "RR"):
-            f.write(format_c_array(f"kIR48_{k}", front_48[k]) + "\n\n")
+            f.write(format_c_array(f"kIR48_Front_{k}", front_48[k]) + "\n\n")
         for k in ("LL", "LR", "RL", "RR"):
-            f.write(format_c_array(f"kIR44_{k}", front_44[k]) + "\n\n")
-        f.write("#else\n")
-        f.write("#error \"Define SPATIAL_MODE=1 (Matrix) or SPATIAL_MODE=2 (Front)\"\n")
-        f.write("#endif\n\n")
+            f.write(format_c_array(f"kIR44_Front_{k}", front_44[k]) + "\n\n")
+
         f.write("#endif // SPATIAL_IR_DATA_H\n")
 
     print(f"Wrote {args.output_h} ({os.path.getsize(args.output_h) / 1024:.1f} KB)")
