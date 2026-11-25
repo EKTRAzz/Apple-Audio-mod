@@ -14,6 +14,7 @@ ENABLE_HOOK_AUDIOUNIT    ?= 1
 ENABLE_HOOK_AUDIOQUEUE   ?= 1
 ENABLE_HOOK_AVPLAYER     ?= 1
 ENABLE_HOOK_SAMPLEBUFFER ?= 1
+ENABLE_OVERLAY_UI        ?= 1
 
 FISHHOOK_DIR ?= third_party/fishhook
 
@@ -23,13 +24,15 @@ COMMON_FLAGS := $(ARCH) $(MIN_IOS) -isysroot $(SDK) -O3 -fPIC -fobjc-arc \
 	-DENABLE_HOOK_AUDIOUNIT=$(ENABLE_HOOK_AUDIOUNIT) \
 	-DENABLE_HOOK_AUDIOQUEUE=$(ENABLE_HOOK_AUDIOQUEUE) \
 	-DENABLE_HOOK_AVPLAYER=$(ENABLE_HOOK_AVPLAYER) \
-	-DENABLE_HOOK_SAMPLEBUFFER=$(ENABLE_HOOK_SAMPLEBUFFER)
+	-DENABLE_HOOK_SAMPLEBUFFER=$(ENABLE_HOOK_SAMPLEBUFFER) \
+	-DENABLE_OVERLAY_UI=$(ENABLE_OVERLAY_UI)
 
 CXXFLAGS := $(COMMON_FLAGS) -std=c++17 -Wall -Wextra -Wno-deprecated-declarations
 CFLAGS   := $(ARCH) $(MIN_IOS) -isysroot $(SDK) -O3 -fPIC -I$(FISHHOOK_DIR)
 
 FRAMEWORKS := \
 	-framework Foundation \
+	-framework UIKit \
 	-framework AVFoundation \
 	-framework AudioToolbox \
 	-framework Accelerate \
@@ -44,6 +47,7 @@ SRCS_MM := \
 	src/HookAudioQueue.mm \
 	src/HookAVPlayer.mm \
 	src/HookSampleBufferRenderer.mm \
+	src/SpatialOverlay.mm \
 	src/Entry.mm
 
 FISHHOOK_C := $(FISHHOOK_DIR)/fishhook.c

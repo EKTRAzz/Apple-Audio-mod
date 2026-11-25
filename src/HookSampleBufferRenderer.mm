@@ -122,6 +122,7 @@ public:
         const AudioStreamBasicDescription *inAsbd = CMAudioFormatDescriptionGetStreamBasicDescription(fmtDesc);
         if (!inAsbd) return nullptr;
 
+        PipelineCoordinator::RecordPipelineSeen(AudioPipelineKind::SampleBufferRenderer);
         std::lock_guard<std::mutex> lock(mutex_);
 
         if (inAsbd->mFormatID == kAudioFormatLinearPCM) {
@@ -310,6 +311,7 @@ private:
         dsp_->ProcessAudioBufferList(reinterpret_cast<AudioBufferList *>(&dstAbl),
                                      static_cast<uint32_t>(numSamples),
                                      asbd);
+        PipelineCoordinator::RecordPipelineProcessed(AudioPipelineKind::SampleBufferRenderer, asbd.mSampleRate);
 
         CMSampleBufferRef outSb = nullptr;
         CMTime pts = CMSampleBufferGetPresentationTimeStamp(sb);
@@ -437,6 +439,7 @@ private:
                                                    pcmR_.data(),
                                                    static_cast<uint32_t>(pcmL_.size()),
                                                    converterOutAsbd_.mSampleRate);
+                PipelineCoordinator::RecordPipelineProcessed(AudioPipelineKind::SampleBufferRenderer, converterOutAsbd_.mSampleRate);
             }
         }
 

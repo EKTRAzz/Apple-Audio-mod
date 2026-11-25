@@ -108,13 +108,16 @@ OSStatus WrappedRenderCallback(void *inRefCon,
     if (ioActionFlags && (*ioActionFlags & kAudioUnitRenderAction_OutputIsSilence)) {
         return status;
     }
+    PipelineCoordinator::RecordPipelineSeen(AudioPipelineKind::AudioUnit);
     if (!RouteMonitor::ShouldProcessAudio()) {
         return status;
     }
 
     ScopedDspGuard guard;
     if (guard.entered && PipelineCoordinator::TryAcquire(AudioPipelineKind::AudioUnit)) {
-        ctx->dsp->ProcessAudioBufferList(ioData, inNumberFrames, EffectiveAsbd(ctx));
+        const AudioStreamBasicDescription asbd = EffectiveAsbd(ctx);
+        ctx->dsp->ProcessAudioBufferList(ioData, inNumberFrames, asbd);
+        PipelineCoordinator::RecordPipelineProcessed(AudioPipelineKind::AudioUnit, asbd.mSampleRate);
     }
     return status;
 }
@@ -141,13 +144,16 @@ OSStatus PostRenderNotifyCallback(void *inRefCon,
     if (!ctx || !ctx->dsp || ctx->hasWrappedCallback.load(std::memory_order_acquire)) {
         return noErr;
     }
+    PipelineCoordinator::RecordPipelineSeen(AudioPipelineKind::AudioUnit);
     if (!RouteMonitor::ShouldProcessAudio()) {
         return noErr;
     }
 
     ScopedDspGuard guard;
     if (guard.entered && PipelineCoordinator::TryAcquire(AudioPipelineKind::AudioUnit)) {
-        ctx->dsp->ProcessAudioBufferList(ioData, inNumberFrames, EffectiveAsbd(ctx));
+        const AudioStreamBasicDescription asbd = EffectiveAsbd(ctx);
+        ctx->dsp->ProcessAudioBufferList(ioData, inNumberFrames, asbd);
+        PipelineCoordinator::RecordPipelineProcessed(AudioPipelineKind::AudioUnit, asbd.mSampleRate);
     }
     return noErr;
 }

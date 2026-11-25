@@ -66,6 +66,7 @@ void TapProcess(MTAudioProcessingTapRef tap,
     if (status != noErr || !bufferListInOut || !numberFramesOut || *numberFramesOut <= 0) {
         return;
     }
+    PipelineCoordinator::RecordPipelineSeen(AudioPipelineKind::AVPlayer);
     if (!RouteMonitor::ShouldProcessAudio()) {
         return;
     }
@@ -76,6 +77,7 @@ void TapProcess(MTAudioProcessingTapRef tap,
     ScopedDspGuard guard;
     if (guard.entered && PipelineCoordinator::TryAcquire(AudioPipelineKind::AVPlayer)) {
         ctx->dsp->ProcessAudioBufferList(bufferListInOut, static_cast<uint32_t>(*numberFramesOut), ctx->asbd);
+        PipelineCoordinator::RecordPipelineProcessed(AudioPipelineKind::AVPlayer, ctx->asbd.mSampleRate);
     }
 }
 

@@ -91,7 +91,6 @@ void RegisterQueueIfSupported(AudioQueueRef aq, const AudioStreamBasicDescriptio
 
 void ProcessQueueBufferIfWinner(AudioQueueRef aq, AudioQueueBufferRef buf) {
     if (!aq || !buf || !buf->mAudioData || buf->mAudioDataByteSize == 0) return;
-    if (!RouteMonitor::ShouldProcessAudio()) return;
 
     // Hold a shared_ptr ref so concurrent AudioQueueDispose cannot free ctx mid-DSP.
     std::shared_ptr<AudioQueueHookCtx> ctx;
@@ -103,6 +102,9 @@ void ProcessQueueBufferIfWinner(AudioQueueRef aq, AudioQueueBufferRef buf) {
         }
     }
     if (!ctx || !ctx->dsp || ctx->asbd.mBytesPerFrame == 0) return;
+
+    PipelineCoordinator::RecordPipelineSeen(AudioPipelineKind::AudioQueue);
+    if (!RouteMonitor::ShouldProcessAudio()) return;
 
     ScopedDspGuard guard;
     if (!guard.entered || !PipelineCoordinator::TryAcquire(AudioPipelineKind::AudioQueue)) {
@@ -118,10 +120,13 @@ void ProcessQueueBufferIfWinner(AudioQueueRef aq, AudioQueueBufferRef buf) {
 
     if (isFloat && ctx->asbd.mBitsPerChannel == 32 && !isNonInterleaved) {
         ctx->dsp->ProcessInterleavedFloat32(static_cast<float *>(buf->mAudioData), frameCount, ctx->asbd.mSampleRate);
+        PipelineCoordinator::RecordPipelineProcessed(AudioPipelineKind::AudioQueue, ctx->asbd.mSampleRate);
     } else if (isSignedInt && ctx->asbd.mBitsPerChannel == 16 && !isNonInterleaved) {
         ctx->dsp->ProcessInterleavedInt16(static_cast<int16_t *>(buf->mAudioData), frameCount, ctx->asbd.mSampleRate);
+        PipelineCoordinator::RecordPipelineProcessed(AudioPipelineKind::AudioQueue, ctx->asbd.mSampleRate);
     } else if (isSignedInt && ctx->asbd.mBitsPerChannel == 32 && !isNonInterleaved) {
         ctx->dsp->ProcessInterleavedInt32(static_cast<int32_t *>(buf->mAudioData), frameCount, ctx->asbd.mSampleRate);
+        PipelineCoordinator::RecordPipelineProcessed(AudioPipelineKind::AudioQueue, ctx->asbd.mSampleRate);
     }
 }
 
