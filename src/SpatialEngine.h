@@ -33,7 +33,16 @@ public:
     // Process stereo Int16 interleaved buffer in-place.
     void ProcessInterleavedInt16(int16_t *interleaved, uint32_t frameCount, double sampleRate);
 
-    // Convenience helper for CoreAudio AudioBufferList (handles Float32 non-interleaved/interleaved & Int16).
+    // Process stereo Int16 non-interleaved buffers in-place.
+    void ProcessNonInterleavedInt16(int16_t *left, int16_t *right, uint32_t frameCount, double sampleRate);
+
+    // Process stereo Int32 interleaved buffer in-place.
+    void ProcessInterleavedInt32(int32_t *interleaved, uint32_t frameCount, double sampleRate);
+
+    // Process stereo Int32 non-interleaved buffers in-place.
+    void ProcessNonInterleavedInt32(int32_t *left, int32_t *right, uint32_t frameCount, double sampleRate);
+
+    // Convenience helper for CoreAudio AudioBufferList (handles Float32, Int16, and Int32 interleaved/non-interleaved).
     void ProcessAudioBufferList(AudioBufferList *ioData,
                                 uint32_t frameCount,
                                 const AudioStreamBasicDescription &asbd);
@@ -61,7 +70,7 @@ private:
     float *tmpRe_    = nullptr;
     float *tmpIm_    = nullptr;
 
-    // Scratch de-interleave buffers (for Float32 interleaved / Int16 interleaved streams).
+    // Scratch de-interleave buffers (for Float32/Int16/Int32 streams).
     float *deintL_ = nullptr;
     float *deintR_ = nullptr;
 };

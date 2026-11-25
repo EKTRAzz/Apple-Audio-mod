@@ -8,9 +8,13 @@ namespace spatial {
 
 namespace {
 std::atomic<bool> gShouldProcess{false};
+std::atomic<bool> gHasObservedValidRoute{false};
+std::atomic<bool> gAsyncRefreshPending{false};
 std::atomic<double> gSessionSampleRate{48000.0};
 id gRouteObserver = nil;
 id gInterruptionObserver = nil;
+id gMediaResetObserver = nil;
+id gAppActiveObserver = nil;
 
 bool EvaluateCurrentRoute() {
     @autoreleasepool {
@@ -32,6 +36,8 @@ bool EvaluateCurrentRoute() {
 
         AVAudioSessionRouteDescription *route = session.currentRoute;
         if (!route || route.outputs.count == 0) return false;
+
+        gHasObservedValidRoute.store(true, std::memory_order_release);
 
         bool hasHeadphoneOutput = false;
         for (AVAudioSessionPortDescription *port in route.outputs) {
@@ -65,6 +71,12 @@ void RouteMonitor::Initialize() {
     dispatch_once(&onceToken, ^{
         RefreshNow();
 
+        // Re-evaluate once the app finishes launching on the main queue (during dyld
+        // constructor time, AVAudioSession.currentRoute can still be empty/stale).
+        dispatch_async(dispatch_get_main_queue(), ^{
+            RefreshNow();
+        });
+
         NSNotificationCenter *nc = [NSNotificationCenter defaultCenter];
         gRouteObserver = [nc addObserverForName:AVAudioSessionRouteChangeNotification
                                          object:nil
@@ -81,6 +93,23 @@ void RouteMonitor::Initialize() {
             (void)note;
             RefreshNow();
         }];
+
+        gMediaResetObserver = [nc addObserverForName:AVAudioSessionMediaServicesWereResetNotification
+                                              object:nil
+                                               queue:nil
+                                          usingBlock:^(NSNotification * _Nonnull note) {
+            (void)note;
+            RefreshNow();
+        }];
+
+        // Use string literal to avoid adding a UIKit link dependency.
+        gAppActiveObserver = [nc addObserverForName:@"UIApplicationDidBecomeActiveNotification"
+                                             object:nil
+                                              queue:nil
+                                         usingBlock:^(NSNotification * _Nonnull note) {
+            (void)note;
+            RefreshNow();
+        }];
     });
 }
 
@@ -89,6 +118,15 @@ void RouteMonitor::RefreshNow() {
 }
 
 bool RouteMonitor::ShouldProcessAudio() {
+    if (!gHasObservedValidRoute.load(std::memory_order_acquire)) {
+        bool expected = false;
+        if (gAsyncRefreshPending.compare_exchange_strong(expected, true, std::memory_order_acq_rel)) {
+            dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+                RefreshNow();
+                gAsyncRefreshPending.store(false, std::memory_order_release);
+            });
+        }
+    }
     return gShouldProcess.load(std::memory_order_relaxed);
 }
 

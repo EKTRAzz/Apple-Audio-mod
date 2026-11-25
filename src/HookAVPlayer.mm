@@ -18,6 +18,10 @@ struct AVPlayerTapCtx {
     std::unique_ptr<SpatialStreamProcessor> dsp;
 };
 
+static const void *kSpatialObserverAssocKey = &kSpatialObserverAssocKey;
+static char kSpatialKvoContext = 0;
+thread_local bool tInSpatialSetAudioMix = false;
+
 void TapInit(MTAudioProcessingTapRef tap, void *clientInfo, void **tapStorageOut) {
     (void)tap;
     (void)clientInfo;
@@ -75,56 +79,203 @@ void TapProcess(MTAudioProcessingTapRef tap,
     }
 }
 
+MTAudioProcessingTapRef CreateSpatialTap() {
+    MTAudioProcessingTapCallbacks callbacks{};
+    callbacks.version = kMTAudioProcessingTapCallbacksVersion_0;
+    callbacks.clientInfo = nullptr;
+    callbacks.init = TapInit;
+    callbacks.finalize = TapFinalize;
+    callbacks.prepare = TapPrepare;
+    callbacks.unprepare = TapUnprepare;
+    callbacks.process = TapProcess;
+
+    MTAudioProcessingTapRef tap = nullptr;
+    OSStatus st = MTAudioProcessingTapCreate(kCFAllocatorDefault,
+                                             &callbacks,
+                                             kMTAudioProcessingTapCreationFlag_PostEffects,
+                                             &tap);
+    return (st == noErr) ? tap : nullptr;
+}
+
+bool MixAlreadyHasTap(AVAudioMix *mix) {
+    if (!mix) return false;
+    for (AVAudioMixInputParameters *p in mix.inputParameters) {
+        if (p.audioTapProcessor != nullptr) {
+            return true;
+        }
+    }
+    return false;
+}
+
+AVAssetTrack *FindAudioTrack(AVPlayerItem *item) {
+    if (!item) return nil;
+    // 1. Prefer AVPlayerItem.tracks (populated for HLS / streaming AVURLAssets once ready).
+    for (AVPlayerItemTrack *itemTrack in item.tracks) {
+        AVAssetTrack *at = itemTrack.assetTrack;
+        if (at && [at.mediaType isEqualToString:AVMediaTypeAudio]) {
+            return at;
+        }
+    }
+    // 2. Fallback to AVAsset.tracks (for progressive / local assets).
+    AVAsset *asset = item.asset;
+    if (asset && [asset statusOfValueForKey:@"tracks" error:nil] == AVKeyValueStatusLoaded) {
+        NSArray<AVAssetTrack *> *audioTracks = [asset tracksWithMediaType:AVMediaTypeAudio];
+        if (audioTracks.count > 0) {
+            return audioTracks.firstObject;
+        }
+    }
+    return nil;
+}
+
+AVAudioMix *InjectTapIntoMix(AVAudioMix *existingMix, AVAssetTrack *audioTrack) {
+    if (!audioTrack) return existingMix;
+    if (MixAlreadyHasTap(existingMix)) return existingMix;
+
+    MTAudioProcessingTapRef tap = CreateSpatialTap();
+    if (!tap) return existingMix;
+
+    AVMutableAudioMix *mutableMix = [AVMutableAudioMix audioMix];
+    NSMutableArray<AVAudioMixInputParameters *> *newParams = [NSMutableArray array];
+    bool attachedToExistingParam = false;
+
+    if (existingMix) {
+        for (AVAudioMixInputParameters *p in existingMix.inputParameters) {
+            AVMutableAudioMixInputParameters *mp = [p mutableCopy];
+            if (!attachedToExistingParam && mp.trackID == audioTrack.trackID) {
+                mp.audioTapProcessor = tap;
+                attachedToExistingParam = true;
+            }
+            [newParams addObject:mp];
+        }
+    }
+
+    if (!attachedToExistingParam) {
+        AVMutableAudioMixInputParameters *params = [AVMutableAudioMixInputParameters audioMixInputParametersWithTrack:audioTrack];
+        params.audioTapProcessor = tap;
+        [newParams addObject:params];
+    }
+
+    CFRelease(tap);
+    mutableMix.inputParameters = newParams;
+    return mutableMix;
+}
+
+void ApplyTapNowIfPossible(AVPlayerItem *item) {
+    if (!item) return;
+    AVAsset *asset = item.asset;
+    if (asset &&
+        [asset statusOfValueForKey:@"hasProtectedContent" error:nil] == AVKeyValueStatusLoaded &&
+        asset.hasProtectedContent) {
+        return;
+    }
+
+    AVAudioMix *currentMix = item.audioMix;
+    if (MixAlreadyHasTap(currentMix)) return;
+
+    AVAssetTrack *audioTrack = FindAudioTrack(item);
+    if (!audioTrack) return;
+
+    AVAudioMix *merged = InjectTapIntoMix(currentMix, audioTrack);
+    if (merged && merged != currentMix) {
+        tInSpatialSetAudioMix = true;
+        item.audioMix = merged;
+        tInSpatialSetAudioMix = false;
+    }
+}
+
+} // namespace
+} // namespace spatial
+
+// KVO helper for HLS / streaming AVPlayerItems whose audio tracks appear only when ReadyToPlay.
+@interface SpatialPlayerItemObserver : NSObject
+@property (nonatomic, unsafe_unretained) AVPlayerItem *observedItem;
+@property (nonatomic, assign) BOOL attached;
+@end
+
+@implementation SpatialPlayerItemObserver
+
+- (instancetype)initWithItem:(AVPlayerItem *)item {
+    self = [super init];
+    if (self && item) {
+        _observedItem = item;
+        _attached = NO;
+        [item addObserver:self forKeyPath:@"status" options:NSKeyValueObservingOptionNew context:&spatial::kSpatialKvoContext];
+        [item addObserver:self forKeyPath:@"tracks" options:NSKeyValueObservingOptionNew context:&spatial::kSpatialKvoContext];
+    }
+    return self;
+}
+
+- (void)stopObserving {
+    if (_observedItem) {
+        @try {
+            [_observedItem removeObserver:self forKeyPath:@"status" context:&spatial::kSpatialKvoContext];
+            [_observedItem removeObserver:self forKeyPath:@"tracks" context:&spatial::kSpatialKvoContext];
+        } @catch (NSException * __unused e) {
+        }
+        _observedItem = nil;
+    }
+}
+
+- (void)dealloc {
+    [self stopObserving];
+}
+
+- (void)observeValueForKeyPath:(NSString *)keyPath
+                      ofObject:(id)object
+                        change:(NSDictionary<NSKeyValueChangeKey, id> *)change
+                       context:(void *)context {
+    (void)keyPath;
+    (void)change;
+    if (context != &spatial::kSpatialKvoContext) {
+        [super observeValueForKeyPath:keyPath ofObject:object change:change context:context];
+        return;
+    }
+    if (_attached || ![object isKindOfClass:[AVPlayerItem class]]) return;
+    AVPlayerItem *item = (AVPlayerItem *)object;
+    if (spatial::FindAudioTrack(item) != nil) {
+        _attached = YES;
+        __weak AVPlayerItem *weakItem = item;
+        dispatch_async(dispatch_get_main_queue(), ^{
+            AVPlayerItem *strongItem = weakItem;
+            if (strongItem) {
+                spatial::ApplyTapNowIfPossible(strongItem);
+            }
+        });
+    }
+}
+
+@end
+
+namespace spatial {
+namespace {
+
 void AttachTapToPlayerItemIfEligible(AVPlayerItem *item) {
-    if (!item || item.audioMix != nil) return;
+    if (!item) return;
+
+    // Install KVO observer once per item so HLS streams attach as soon as tracks populate.
+    if (!objc_getAssociatedObject(item, kSpatialObserverAssocKey)) {
+        SpatialPlayerItemObserver *obs = [[SpatialPlayerItemObserver alloc] initWithItem:item];
+        objc_setAssociatedObject(item, kSpatialObserverAssocKey, obs, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    }
+
     AVAsset *asset = item.asset;
     if (!asset) return;
 
     __weak AVPlayerItem *weakItem = item;
     [asset loadValuesAsynchronouslyForKeys:@[@"tracks", @"hasProtectedContent"] completionHandler:^{
         AVPlayerItem *strongItem = weakItem;
-        if (!strongItem || strongItem.audioMix != nil) return;
+        if (!strongItem) return;
 
-        // Safely skip FairPlay DRM protected streams (MTAudioProcessingTap is unsupported by iOS on DRM).
         NSError *err = nil;
         if ([asset statusOfValueForKey:@"hasProtectedContent" error:&err] == AVKeyValueStatusLoaded &&
             asset.hasProtectedContent) {
             return;
         }
-        if ([asset statusOfValueForKey:@"tracks" error:&err] != AVKeyValueStatusLoaded) {
-            return;
-        }
-
-        NSArray<AVAssetTrack *> *audioTracks = [asset tracksWithMediaType:AVMediaTypeAudio];
-        if (audioTracks.count == 0) return;
-
-        MTAudioProcessingTapCallbacks callbacks{};
-        callbacks.version = kMTAudioProcessingTapCallbacksVersion_0;
-        callbacks.clientInfo = nullptr;
-        callbacks.init = TapInit;
-        callbacks.finalize = TapFinalize;
-        callbacks.prepare = TapPrepare;
-        callbacks.unprepare = TapUnprepare;
-        callbacks.process = TapProcess;
-
-        MTAudioProcessingTapRef tap = nullptr;
-        OSStatus st = MTAudioProcessingTapCreate(kCFAllocatorDefault,
-                                                 &callbacks,
-                                                 kMTAudioProcessingTapCreationFlag_PostEffects,
-                                                 &tap);
-        if (st != noErr || !tap) return;
-
-        AVMutableAudioMixInputParameters *params = [AVMutableAudioMixInputParameters audioMixInputParametersWithTrack:audioTracks.firstObject];
-        params.audioTapProcessor = tap;
-        CFRelease(tap);
-
-        AVMutableAudioMix *mix = [AVMutableAudioMix audioMix];
-        mix.inputParameters = @[params];
 
         dispatch_async(dispatch_get_main_queue(), ^{
             AVPlayerItem *finalItem = weakItem;
-            if (finalItem && finalItem.audioMix == nil) {
-                finalItem.audioMix = mix;
+            if (finalItem) {
+                ApplyTapNowIfPossible(finalItem);
             }
         });
     }];
@@ -132,6 +283,37 @@ void AttachTapToPlayerItemIfEligible(AVPlayerItem *item) {
 
 } // namespace
 } // namespace spatial
+
+@interface AVPlayerItem (SpatialAudioHook)
+- (void)spatial_setAudioMix:(AVAudioMix *)audioMix;
+@end
+
+@implementation AVPlayerItem (SpatialAudioHook)
+
+- (void)spatial_setAudioMix:(AVAudioMix *)audioMix {
+    if (spatial::tInSpatialSetAudioMix) {
+        [self spatial_setAudioMix:audioMix];
+        return;
+    }
+    // If the app sets its own volume/loudness audioMix (without an audioTapProcessor),
+    // preserve its parameters and keep our Spatial tap attached.
+    AVAudioMix *finalMix = audioMix;
+    if (audioMix && !spatial::MixAlreadyHasTap(audioMix)) {
+        AVAsset *asset = self.asset;
+        BOOL isProtected = (asset &&
+                            [asset statusOfValueForKey:@"hasProtectedContent" error:nil] == AVKeyValueStatusLoaded &&
+                            asset.hasProtectedContent);
+        if (!isProtected) {
+            AVAssetTrack *audioTrack = spatial::FindAudioTrack(self);
+            if (audioTrack) {
+                finalMix = spatial::InjectTapIntoMix(audioMix, audioTrack);
+            }
+        }
+    }
+    [self spatial_setAudioMix:finalMix];
+}
+
+@end
 
 @interface AVPlayer (SpatialAudioHook)
 - (instancetype)spatial_initWithPlayerItem:(AVPlayerItem *)item;
@@ -191,6 +373,7 @@ void InstallAVPlayerHook() {
                 method_exchangeImplementations(m1, m2);
             }
         };
+        swizzle([AVPlayerItem class], @selector(setAudioMix:), @selector(spatial_setAudioMix:));
         swizzle([AVPlayer class], @selector(initWithPlayerItem:), @selector(spatial_initWithPlayerItem:));
         swizzle([AVPlayer class], @selector(replaceCurrentItemWithPlayerItem:), @selector(spatial_replaceCurrentItemWithPlayerItem:));
         swizzle([AVQueuePlayer class], @selector(initWithItems:), @selector(spatial_initWithItems:));

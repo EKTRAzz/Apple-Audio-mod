@@ -2,8 +2,10 @@
 #include "RouteMonitor.h"
 #include "SpatialEngine.h"
 
+#import <AVFoundation/AVFoundation.h>
 #import <AudioToolbox/AudioToolbox.h>
 #import <Foundation/Foundation.h>
+#import <objc/runtime.h>
 #include "fishhook.h"
 
 #include <atomic>
@@ -31,11 +33,13 @@ std::unordered_map<AudioUnit, std::unique_ptr<AudioUnitHookCtx>> gAuContexts;
 using FnAudioUnitSetProperty = OSStatus (*)(AudioUnit, AudioUnitPropertyID, AudioUnitScope, AudioUnitElement, const void *, UInt32);
 using FnAUGraphSetNodeInputCallback = OSStatus (*)(AUGraph, AUNode, UInt32, const AURenderCallbackStruct *);
 using FnAudioUnitInitialize = OSStatus (*)(AudioUnit);
+using FnAudioOutputUnitStart = OSStatus (*)(AudioUnit);
 using FnAudioComponentInstanceDispose = OSStatus (*)(AudioComponentInstance);
 
 FnAudioUnitSetProperty          orig_AudioUnitSetProperty = nullptr;
 FnAUGraphSetNodeInputCallback   orig_AUGraphSetNodeInputCallback = nullptr;
 FnAudioUnitInitialize           orig_AudioUnitInitialize = nullptr;
+FnAudioOutputUnitStart          orig_AudioOutputUnitStart = nullptr;
 FnAudioComponentInstanceDispose orig_AudioComponentInstanceDispose = nullptr;
 
 bool IsTerminalOutputUnit(AudioUnit unit) {
@@ -156,6 +160,24 @@ inline AURenderCallback AsAURenderCallback(OSStatus (*fn)(void *, AudioUnitRende
     return reinterpret_cast<AURenderCallback>(fn);
 }
 
+void EnsurePostRenderNotifyAttached(AudioUnit inUnit) {
+    if (!inUnit || !IsTerminalOutputUnit(inUnit)) return;
+    AudioUnitHookCtx *ctx = nullptr;
+    bool needAttachNotify = false;
+    {
+        std::lock_guard<std::mutex> lock(gAuMutex);
+        ctx = GetOrCreateCtxLocked(inUnit);
+        RefreshUnitFormat(inUnit, ctx);
+        if (!ctx->hasWrappedCallback.load(std::memory_order_acquire) && !ctx->hasRenderNotify) {
+            ctx->hasRenderNotify = true;
+            needAttachNotify = true;
+        }
+    }
+    if (needAttachNotify) {
+        AudioUnitAddRenderNotify(inUnit, AsAURenderCallback(&PostRenderNotifyCallback), ctx);
+    }
+}
+
 OSStatus hooked_AudioUnitSetProperty(AudioUnit inUnit,
                                      AudioUnitPropertyID inID,
                                      AudioUnitScope inScope,
@@ -250,25 +272,17 @@ OSStatus hooked_AUGraphSetNodeInputCallback(AUGraph inGraph,
 
 OSStatus hooked_AudioUnitInitialize(AudioUnit inUnit) {
     OSStatus st = orig_AudioUnitInitialize(inUnit);
-    if (st == noErr && inUnit && IsTerminalOutputUnit(inUnit)) {
-        AudioUnitHookCtx *ctx = nullptr;
-        bool needAttachNotify = false;
-        {
-            std::lock_guard<std::mutex> lock(gAuMutex);
-            ctx = GetOrCreateCtxLocked(inUnit);
-            RefreshUnitFormat(inUnit, ctx);
-            // If app connected nodes (e.g. AVAudioEngine / AUGraphConnectNodeInput) instead of
-            // setting a direct render callback on RemoteIO, attach a PostRender notify callback.
-            if (!ctx->hasWrappedCallback.load(std::memory_order_acquire) && !ctx->hasRenderNotify) {
-                ctx->hasRenderNotify = true;
-                needAttachNotify = true;
-            }
-        }
-        if (needAttachNotify) {
-            AudioUnitAddRenderNotify(inUnit, AsAURenderCallback(&PostRenderNotifyCallback), ctx);
-        }
+    if (st == noErr && inUnit) {
+        EnsurePostRenderNotifyAttached(inUnit);
     }
     return st;
+}
+
+OSStatus hooked_AudioOutputUnitStart(AudioUnit inUnit) {
+    if (inUnit) {
+        EnsurePostRenderNotifyAttached(inUnit);
+    }
+    return orig_AudioOutputUnitStart(inUnit);
 }
 
 OSStatus hooked_AudioComponentInstanceDispose(AudioComponentInstance inInstance) {
@@ -293,15 +307,66 @@ OSStatus hooked_AudioComponentInstanceDispose(AudioComponentInstance inInstance)
 }
 
 } // namespace
+} // namespace spatial
+
+// Swizzle AVAudioEngine directly so RemoteIO units created inside AVFAudio (dyld shared cache)
+// are still captured even when fishhook cannot intercept internal Apple framework calls.
+@interface AVAudioEngine (SpatialAudioHook)
+- (void)spatial_prepare;
+- (BOOL)spatial_startAndReturnError:(NSError * _Nullable * _Nullable)outError;
+@end
+
+@implementation AVAudioEngine (SpatialAudioHook)
+
+- (void)spatial_prepare {
+    [self spatial_prepare];
+    AudioUnit outUnit = self.outputNode.audioUnit;
+    if (outUnit) {
+        spatial::EnsurePostRenderNotifyAttached(outUnit);
+    }
+}
+
+- (BOOL)spatial_startAndReturnError:(NSError * _Nullable * _Nullable)outError {
+    AudioUnit outUnit = self.outputNode.audioUnit;
+    if (outUnit) {
+        spatial::EnsurePostRenderNotifyAttached(outUnit);
+    }
+    BOOL ok = [self spatial_startAndReturnError:outError];
+    if (ok) {
+        AudioUnit postUnit = self.outputNode.audioUnit;
+        if (postUnit) {
+            spatial::EnsurePostRenderNotifyAttached(postUnit);
+        }
+    }
+    return ok;
+}
+
+@end
+
+namespace spatial {
 
 void InstallAudioUnitHook() {
     struct rebinding rebs[] = {
         { "AudioUnitSetProperty",           (void *)hooked_AudioUnitSetProperty,           (void **)&orig_AudioUnitSetProperty },
         { "AUGraphSetNodeInputCallback",    (void *)hooked_AUGraphSetNodeInputCallback,    (void **)&orig_AUGraphSetNodeInputCallback },
         { "AudioUnitInitialize",            (void *)hooked_AudioUnitInitialize,            (void **)&orig_AudioUnitInitialize },
+        { "AudioOutputUnitStart",           (void *)hooked_AudioOutputUnitStart,           (void **)&orig_AudioOutputUnitStart },
         { "AudioComponentInstanceDispose",  (void *)hooked_AudioComponentInstanceDispose,  (void **)&orig_AudioComponentInstanceDispose },
     };
     rebind_symbols(rebs, sizeof(rebs) / sizeof(rebs[0]));
+
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        auto swizzle = [](Class cls, SEL origSel, SEL newSel) {
+            Method m1 = class_getInstanceMethod(cls, origSel);
+            Method m2 = class_getInstanceMethod(cls, newSel);
+            if (m1 && m2) {
+                method_exchangeImplementations(m1, m2);
+            }
+        };
+        swizzle([AVAudioEngine class], @selector(prepare), @selector(spatial_prepare));
+        swizzle([AVAudioEngine class], @selector(startAndReturnError:), @selector(spatial_startAndReturnError:));
+    });
 }
 
 } // namespace spatial

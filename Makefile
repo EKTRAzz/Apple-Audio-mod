@@ -9,10 +9,11 @@ ARCH      := -arch arm64
 MIN_IOS   := -miphoneos-version-min=15.0
 
 # Tuneable compile-time options
-HEADROOM_DB           ?= -2.5f
-ENABLE_HOOK_AUDIOUNIT ?= 1
-ENABLE_HOOK_AUDIOQUEUE ?= 1
-ENABLE_HOOK_AVPLAYER  ?= 1
+HEADROOM_DB              ?= -2.5f
+ENABLE_HOOK_AUDIOUNIT    ?= 1
+ENABLE_HOOK_AUDIOQUEUE   ?= 1
+ENABLE_HOOK_AVPLAYER     ?= 1
+ENABLE_HOOK_SAMPLEBUFFER ?= 1
 
 FISHHOOK_DIR ?= third_party/fishhook
 
@@ -21,7 +22,8 @@ COMMON_FLAGS := $(ARCH) $(MIN_IOS) -isysroot $(SDK) -O3 -fPIC -fobjc-arc \
 	-DSPATIAL_HEADROOM_DB=$(HEADROOM_DB) \
 	-DENABLE_HOOK_AUDIOUNIT=$(ENABLE_HOOK_AUDIOUNIT) \
 	-DENABLE_HOOK_AUDIOQUEUE=$(ENABLE_HOOK_AUDIOQUEUE) \
-	-DENABLE_HOOK_AVPLAYER=$(ENABLE_HOOK_AVPLAYER)
+	-DENABLE_HOOK_AVPLAYER=$(ENABLE_HOOK_AVPLAYER) \
+	-DENABLE_HOOK_SAMPLEBUFFER=$(ENABLE_HOOK_SAMPLEBUFFER)
 
 CXXFLAGS := $(COMMON_FLAGS) -std=c++17 -Wall -Wextra -Wno-deprecated-declarations
 CFLAGS   := $(ARCH) $(MIN_IOS) -isysroot $(SDK) -O3 -fPIC -I$(FISHHOOK_DIR)
@@ -41,6 +43,7 @@ SRCS_MM := \
 	src/HookAudioUnit.mm \
 	src/HookAudioQueue.mm \
 	src/HookAVPlayer.mm \
+	src/HookSampleBufferRenderer.mm \
 	src/Entry.mm
 
 FISHHOOK_C := $(FISHHOOK_DIR)/fishhook.c

@@ -13,10 +13,15 @@
 #define ENABLE_HOOK_AVPLAYER 1
 #endif
 
+#ifndef ENABLE_HOOK_SAMPLEBUFFER
+#define ENABLE_HOOK_SAMPLEBUFFER 1
+#endif
+
 namespace spatial {
 void InstallAudioUnitHook();
 void InstallAudioQueueHook();
 void InstallAVPlayerHook();
+void InstallSampleBufferRendererHook();
 } // namespace spatial
 
 __attribute__((constructor))
@@ -36,5 +41,8 @@ static void SpatialAudioMultiHookInit() {
 #endif
 #if ENABLE_HOOK_AVPLAYER
     spatial::InstallAVPlayerHook();
+#endif
+#if ENABLE_HOOK_SAMPLEBUFFER
+    spatial::InstallSampleBufferRendererHook();
 #endif
 }

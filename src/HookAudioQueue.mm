@@ -120,6 +120,8 @@ void ProcessQueueBufferIfWinner(AudioQueueRef aq, AudioQueueBufferRef buf) {
         ctx->dsp->ProcessInterleavedFloat32(static_cast<float *>(buf->mAudioData), frameCount, ctx->asbd.mSampleRate);
     } else if (isSignedInt && ctx->asbd.mBitsPerChannel == 16 && !isNonInterleaved) {
         ctx->dsp->ProcessInterleavedInt16(static_cast<int16_t *>(buf->mAudioData), frameCount, ctx->asbd.mSampleRate);
+    } else if (isSignedInt && ctx->asbd.mBitsPerChannel == 32 && !isNonInterleaved) {
+        ctx->dsp->ProcessInterleavedInt32(static_cast<int32_t *>(buf->mAudioData), frameCount, ctx->asbd.mSampleRate);
     }
 }
 

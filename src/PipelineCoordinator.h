@@ -6,10 +6,11 @@
 namespace spatial {
 
 enum class AudioPipelineKind : int {
-    None       = 0,
-    AudioUnit  = 1,  // AudioUnit / AUGraph / AVAudioEngine (RemoteIO / VoiceProcessingIO)
-    AudioQueue = 2,  // AudioToolbox AudioQueue (Linear PCM)
-    AVPlayer   = 3,  // AVFoundation AVPlayer / AVQueuePlayer (MTAudioProcessingTap)
+    None                 = 0,
+    AudioUnit            = 1,  // AudioUnit / AUGraph / AVAudioEngine (RemoteIO / VoiceProcessingIO)
+    AudioQueue           = 2,  // AudioToolbox AudioQueue (Linear PCM)
+    AVPlayer             = 3,  // AVFoundation AVPlayer / AVQueuePlayer (MTAudioProcessingTap)
+    SampleBufferRenderer = 4,  // AVFoundation AVSampleBufferAudioRenderer (PCM & in-process AAC/Opus decode)
 };
 
 // Single-Winner Exclusive Pipeline Coordinator:

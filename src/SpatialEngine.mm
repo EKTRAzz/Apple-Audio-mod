@@ -329,6 +329,111 @@ void SpatialStreamProcessor::ProcessInterleavedInt16(int16_t *interleaved,
     }
 }
 
+void SpatialStreamProcessor::ProcessNonInterleavedInt16(int16_t *left,
+                                                        int16_t *right,
+                                                        uint32_t frameCount,
+                                                        double sampleRate) {
+    if (!left || !right || !deintL_ || !deintR_ || frameCount == 0) return;
+
+    bool is44k = false;
+    if (!IsSupportedSampleRate(sampleRate, is44k)) return;
+
+    if (std::fabs(sampleRate - lastSampleRate_) > 10.0) {
+        Reset();
+        lastSampleRate_ = sampleRate;
+    }
+
+    constexpr float kInv32768 = 1.0f / 32768.0f;
+    uint32_t offset = 0;
+    while (offset < frameCount) {
+        const uint32_t chunk = std::min(kMaxChunk, frameCount - offset);
+        int16_t *srcL = left + offset;
+        int16_t *srcR = right + offset;
+        for (uint32_t i = 0; i < chunk; ++i) {
+            deintL_[i] = static_cast<float>(srcL[i]) * kInv32768;
+            deintR_[i] = static_cast<float>(srcR[i]) * kInv32768;
+        }
+        ProcessChunk(deintL_, deintR_, chunk, is44k);
+        for (uint32_t i = 0; i < chunk; ++i) {
+            float l = std::max(-1.0f, std::min(1.0f, deintL_[i])) * 32767.0f;
+            float r = std::max(-1.0f, std::min(1.0f, deintR_[i])) * 32767.0f;
+            srcL[i] = static_cast<int16_t>(std::lrintf(l));
+            srcR[i] = static_cast<int16_t>(std::lrintf(r));
+        }
+        offset += chunk;
+    }
+}
+
+void SpatialStreamProcessor::ProcessInterleavedInt32(int32_t *interleaved,
+                                                     uint32_t frameCount,
+                                                     double sampleRate) {
+    if (!interleaved || !deintL_ || !deintR_ || frameCount == 0) return;
+
+    bool is44k = false;
+    if (!IsSupportedSampleRate(sampleRate, is44k)) return;
+
+    if (std::fabs(sampleRate - lastSampleRate_) > 10.0) {
+        Reset();
+        lastSampleRate_ = sampleRate;
+    }
+
+    constexpr double kInvMax = 1.0 / 2147483648.0;
+    constexpr double kMaxPos = 2147483647.0;
+    uint32_t offset = 0;
+    while (offset < frameCount) {
+        const uint32_t chunk = std::min(kMaxChunk, frameCount - offset);
+        int32_t *src = interleaved + (offset * 2);
+        for (uint32_t i = 0; i < chunk; ++i) {
+            deintL_[i] = static_cast<float>(static_cast<double>(src[2 * i]) * kInvMax);
+            deintR_[i] = static_cast<float>(static_cast<double>(src[2 * i + 1]) * kInvMax);
+        }
+        ProcessChunk(deintL_, deintR_, chunk, is44k);
+        for (uint32_t i = 0; i < chunk; ++i) {
+            double l = std::max(-1.0, std::min(1.0, static_cast<double>(deintL_[i]))) * kMaxPos;
+            double r = std::max(-1.0, std::min(1.0, static_cast<double>(deintR_[i]))) * kMaxPos;
+            src[2 * i]     = static_cast<int32_t>(std::llround(l));
+            src[2 * i + 1] = static_cast<int32_t>(std::llround(r));
+        }
+        offset += chunk;
+    }
+}
+
+void SpatialStreamProcessor::ProcessNonInterleavedInt32(int32_t *left,
+                                                        int32_t *right,
+                                                        uint32_t frameCount,
+                                                        double sampleRate) {
+    if (!left || !right || !deintL_ || !deintR_ || frameCount == 0) return;
+
+    bool is44k = false;
+    if (!IsSupportedSampleRate(sampleRate, is44k)) return;
+
+    if (std::fabs(sampleRate - lastSampleRate_) > 10.0) {
+        Reset();
+        lastSampleRate_ = sampleRate;
+    }
+
+    constexpr double kInvMax = 1.0 / 2147483648.0;
+    constexpr double kMaxPos = 2147483647.0;
+    uint32_t offset = 0;
+    while (offset < frameCount) {
+        const uint32_t chunk = std::min(kMaxChunk, frameCount - offset);
+        int32_t *srcL = left + offset;
+        int32_t *srcR = right + offset;
+        for (uint32_t i = 0; i < chunk; ++i) {
+            deintL_[i] = static_cast<float>(static_cast<double>(srcL[i]) * kInvMax);
+            deintR_[i] = static_cast<float>(static_cast<double>(srcR[i]) * kInvMax);
+        }
+        ProcessChunk(deintL_, deintR_, chunk, is44k);
+        for (uint32_t i = 0; i < chunk; ++i) {
+            double l = std::max(-1.0, std::min(1.0, static_cast<double>(deintL_[i]))) * kMaxPos;
+            double r = std::max(-1.0, std::min(1.0, static_cast<double>(deintR_[i]))) * kMaxPos;
+            srcL[i] = static_cast<int32_t>(std::llround(l));
+            srcR[i] = static_cast<int32_t>(std::llround(r));
+        }
+        offset += chunk;
+    }
+}
+
 void SpatialStreamProcessor::ProcessAudioBufferList(AudioBufferList *ioData,
                                                     uint32_t frameCount,
                                                     const AudioStreamBasicDescription &asbd) {
@@ -348,9 +453,24 @@ void SpatialStreamProcessor::ProcessAudioBufferList(AudioBufferList *ioData,
             float *interleaved = static_cast<float *>(ioData->mBuffers[0].mData);
             ProcessInterleavedFloat32(interleaved, frameCount, asbd.mSampleRate);
         }
-    } else if (isSignedInt && asbd.mBitsPerChannel == 16 && !isNonInterleaved && ioData->mNumberBuffers >= 1) {
-        int16_t *interleaved = static_cast<int16_t *>(ioData->mBuffers[0].mData);
-        ProcessInterleavedInt16(interleaved, frameCount, asbd.mSampleRate);
+    } else if (isSignedInt && asbd.mBitsPerChannel == 16) {
+        if (isNonInterleaved && ioData->mNumberBuffers >= 2) {
+            int16_t *l = static_cast<int16_t *>(ioData->mBuffers[0].mData);
+            int16_t *r = static_cast<int16_t *>(ioData->mBuffers[1].mData);
+            ProcessNonInterleavedInt16(l, r, frameCount, asbd.mSampleRate);
+        } else if (!isNonInterleaved && ioData->mNumberBuffers >= 1) {
+            int16_t *interleaved = static_cast<int16_t *>(ioData->mBuffers[0].mData);
+            ProcessInterleavedInt16(interleaved, frameCount, asbd.mSampleRate);
+        }
+    } else if (isSignedInt && asbd.mBitsPerChannel == 32) {
+        if (isNonInterleaved && ioData->mNumberBuffers >= 2) {
+            int32_t *l = static_cast<int32_t *>(ioData->mBuffers[0].mData);
+            int32_t *r = static_cast<int32_t *>(ioData->mBuffers[1].mData);
+            ProcessNonInterleavedInt32(l, r, frameCount, asbd.mSampleRate);
+        } else if (!isNonInterleaved && ioData->mNumberBuffers >= 1) {
+            int32_t *interleaved = static_cast<int32_t *>(ioData->mBuffers[0].mData);
+            ProcessInterleavedInt32(interleaved, frameCount, asbd.mSampleRate);
+        }
     }
 }
 
