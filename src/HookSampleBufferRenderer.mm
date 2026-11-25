@@ -308,10 +308,9 @@ private:
 
         if (retainedBlock) CFRelease(retainedBlock);
 
-        dsp_->ProcessAudioBufferList(reinterpret_cast<AudioBufferList *>(&dstAbl),
+        const uint32_t frames = dsp_->ProcessAudioBufferList(reinterpret_cast<AudioBufferList *>(&dstAbl),
                                      static_cast<uint32_t>(numSamples),
                                      asbd);
-        PipelineCoordinator::RecordPipelineProcessed(AudioPipelineKind::SampleBufferRenderer, asbd.mSampleRate);
 
         CMSampleBufferRef outSb = nullptr;
         CMTime pts = CMSampleBufferGetPresentationTimeStamp(sb);
@@ -329,6 +328,7 @@ private:
             return nullptr;
         }
 
+        PipelineCoordinator::RecordPipelineProcessed(AudioPipelineKind::SampleBufferRenderer, asbd.mSampleRate, frames);
         CMPropagateAttachments(sb, outSb);
         return outSb;
     }
@@ -432,14 +432,14 @@ private:
             return nullptr;
         }
 
+        uint32_t frames = 0;
         if (RouteMonitor::ShouldProcessAudio()) {
             ScopedDspGuard guard;
             if (guard.entered && PipelineCoordinator::TryAcquire(AudioPipelineKind::SampleBufferRenderer)) {
-                dsp_->ProcessNonInterleavedFloat32(pcmL_.data(),
+                frames = dsp_->ProcessNonInterleavedFloat32(pcmL_.data(),
                                                    pcmR_.data(),
                                                    static_cast<uint32_t>(pcmL_.size()),
                                                    converterOutAsbd_.mSampleRate);
-                PipelineCoordinator::RecordPipelineProcessed(AudioPipelineKind::SampleBufferRenderer, converterOutAsbd_.mSampleRate);
             }
         }
 
@@ -485,6 +485,7 @@ private:
             return nullptr;
         }
 
+        PipelineCoordinator::RecordPipelineProcessed(AudioPipelineKind::SampleBufferRenderer, converterOutAsbd_.mSampleRate, frames);
         CMPropagateAttachments(sb, outSb);
         return outSb;
     }

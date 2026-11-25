@@ -52,7 +52,7 @@ public:
     static void RecordPipelineSeen(AudioPipelineKind kind);
 
     // Call on real-time audio thread right when DSP actually processes audio frames.
-    static void RecordPipelineProcessed(AudioPipelineKind kind, double sampleRate);
+    static void RecordPipelineProcessed(AudioPipelineKind kind, double sampleRate, uint32_t frames);
 
     // Call on real-time audio thread before running DSP.
     // Returns true ONLY if master is enabled, pipeline is allowed, and it owns the exclusive lock.

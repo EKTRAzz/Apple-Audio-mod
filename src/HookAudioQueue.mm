@@ -119,14 +119,14 @@ void ProcessQueueBufferIfWinner(AudioQueueRef aq, AudioQueueBufferRef buf) {
     const bool isSignedInt = (ctx->asbd.mFormatFlags & kAudioFormatFlagIsSignedInteger) != 0;
 
     if (isFloat && ctx->asbd.mBitsPerChannel == 32 && !isNonInterleaved) {
-        ctx->dsp->ProcessInterleavedFloat32(static_cast<float *>(buf->mAudioData), frameCount, ctx->asbd.mSampleRate);
-        PipelineCoordinator::RecordPipelineProcessed(AudioPipelineKind::AudioQueue, ctx->asbd.mSampleRate);
+        const uint32_t frames = ctx->dsp->ProcessInterleavedFloat32(static_cast<float *>(buf->mAudioData), frameCount, ctx->asbd.mSampleRate);
+        PipelineCoordinator::RecordPipelineProcessed(AudioPipelineKind::AudioQueue, ctx->asbd.mSampleRate, frames);
     } else if (isSignedInt && ctx->asbd.mBitsPerChannel == 16 && !isNonInterleaved) {
-        ctx->dsp->ProcessInterleavedInt16(static_cast<int16_t *>(buf->mAudioData), frameCount, ctx->asbd.mSampleRate);
-        PipelineCoordinator::RecordPipelineProcessed(AudioPipelineKind::AudioQueue, ctx->asbd.mSampleRate);
+        const uint32_t frames = ctx->dsp->ProcessInterleavedInt16(static_cast<int16_t *>(buf->mAudioData), frameCount, ctx->asbd.mSampleRate);
+        PipelineCoordinator::RecordPipelineProcessed(AudioPipelineKind::AudioQueue, ctx->asbd.mSampleRate, frames);
     } else if (isSignedInt && ctx->asbd.mBitsPerChannel == 32 && !isNonInterleaved) {
-        ctx->dsp->ProcessInterleavedInt32(static_cast<int32_t *>(buf->mAudioData), frameCount, ctx->asbd.mSampleRate);
-        PipelineCoordinator::RecordPipelineProcessed(AudioPipelineKind::AudioQueue, ctx->asbd.mSampleRate);
+        const uint32_t frames = ctx->dsp->ProcessInterleavedInt32(static_cast<int32_t *>(buf->mAudioData), frameCount, ctx->asbd.mSampleRate);
+        PipelineCoordinator::RecordPipelineProcessed(AudioPipelineKind::AudioQueue, ctx->asbd.mSampleRate, frames);
     }
 }
 

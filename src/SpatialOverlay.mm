@@ -358,7 +358,7 @@
     // 4. Live traffic table per pipeline (shows which pipeline the app is actually using!)
     auto lineFor = [&](int idx, const char *label) -> NSString * {
         const char *dot = t.processedRecently[idx] ? "🟢" : (t.seenRecently[idx] ? "🟡" : "⚪");
-        return [NSString stringWithFormat:@"%s %-13s seen:%llu  dsp:%llu",
+        return [NSString stringWithFormat:@"%s %-13s seen:%llu  frames:%llu",
                 dot,
                 label,
                 static_cast<unsigned long long>(t.seenCounts[idx]),

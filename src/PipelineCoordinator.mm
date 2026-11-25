@@ -17,7 +17,6 @@ std::atomic<bool> gForceOutput{false};
 
 std::atomic<int> gActivePipeline{static_cast<int>(AudioPipelineKind::None)};
 std::atomic<uint64_t> gLastAudioTimeNs{0};
-std::atomic<uint64_t> gLastProcessedTimeNs{0};
 std::atomic<double> gLastProcessedSampleRate{0.0};
 
 std::atomic<int> gStreamCounts[5] = { {0}, {0}, {0}, {0}, {0} };
@@ -122,13 +121,12 @@ void PipelineCoordinator::RecordPipelineSeen(AudioPipelineKind kind) {
     gLastSeenNs[idx].store(MonotonicNowNs(), std::memory_order_relaxed);
 }
 
-void PipelineCoordinator::RecordPipelineProcessed(AudioPipelineKind kind, double sampleRate) {
+void PipelineCoordinator::RecordPipelineProcessed(AudioPipelineKind kind, double sampleRate, uint32_t frames) {
     int idx = static_cast<int>(kind);
-    if (idx < 1 || idx > 4) return;
+    if (frames == 0 || idx < 1 || idx > 4) return;
     const uint64_t now = MonotonicNowNs();
-    gProcessedCounts[idx].fetch_add(1, std::memory_order_relaxed);
+    gProcessedCounts[idx].fetch_add(frames, std::memory_order_relaxed);
     gLastProcNs[idx].store(now, std::memory_order_relaxed);
-    gLastProcessedTimeNs.store(now, std::memory_order_relaxed);
     if (sampleRate > 0.0) {
         gLastProcessedSampleRate.store(sampleRate, std::memory_order_relaxed);
     }
@@ -220,8 +218,6 @@ PipelineTelemetry PipelineCoordinator::SnapshotTelemetry() {
     t.activePipeline = static_cast<AudioPipelineKind>(gActivePipeline.load(std::memory_order_acquire));
     t.activeSampleRate = gLastProcessedSampleRate.load(std::memory_order_relaxed);
 
-    const uint64_t lastProc = gLastProcessedTimeNs.load(std::memory_order_relaxed);
-    t.dspActiveNow = t.masterEnabled && (lastProc > 0 && now >= lastProc && (now - lastProc) <= kRecentActivityWindowNs);
 
     for (int i = 1; i <= 4; ++i) {
         t.seenCounts[i] = gSeenCounts[i].load(std::memory_order_relaxed);
@@ -231,6 +227,7 @@ PipelineTelemetry PipelineCoordinator::SnapshotTelemetry() {
         t.seenRecently[i] = (ls > 0 && now >= ls && (now - ls) <= kRecentActivityWindowNs);
         t.processedRecently[i] = (lp > 0 && now >= lp && (now - lp) <= kRecentActivityWindowNs);
     }
+    t.dspActiveNow = t.masterEnabled && t.processedRecently[static_cast<int>(t.activePipeline)];
     return t;
 }
 

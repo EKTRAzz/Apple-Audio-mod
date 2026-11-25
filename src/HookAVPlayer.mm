@@ -76,8 +76,8 @@ void TapProcess(MTAudioProcessingTapRef tap,
 
     ScopedDspGuard guard;
     if (guard.entered && PipelineCoordinator::TryAcquire(AudioPipelineKind::AVPlayer)) {
-        ctx->dsp->ProcessAudioBufferList(bufferListInOut, static_cast<uint32_t>(*numberFramesOut), ctx->asbd);
-        PipelineCoordinator::RecordPipelineProcessed(AudioPipelineKind::AVPlayer, ctx->asbd.mSampleRate);
+        const uint32_t frames = ctx->dsp->ProcessAudioBufferList(bufferListInOut, static_cast<uint32_t>(*numberFramesOut), ctx->asbd);
+        PipelineCoordinator::RecordPipelineProcessed(AudioPipelineKind::AVPlayer, ctx->asbd.mSampleRate, frames);
     }
 }
 

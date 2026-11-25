@@ -25,30 +25,30 @@ public:
     void Reset();
 
     // Process stereo Float32 non-interleaved buffers in-place.
-    void ProcessNonInterleavedFloat32(float *left, float *right, uint32_t frameCount, double sampleRate);
+    uint32_t ProcessNonInterleavedFloat32(float *left, float *right, uint32_t frameCount, double sampleRate);
 
     // Process stereo Float32 interleaved buffer in-place.
-    void ProcessInterleavedFloat32(float *interleaved, uint32_t frameCount, double sampleRate);
+    uint32_t ProcessInterleavedFloat32(float *interleaved, uint32_t frameCount, double sampleRate);
 
     // Process stereo Int16 interleaved buffer in-place.
-    void ProcessInterleavedInt16(int16_t *interleaved, uint32_t frameCount, double sampleRate);
+    uint32_t ProcessInterleavedInt16(int16_t *interleaved, uint32_t frameCount, double sampleRate);
 
     // Process stereo Int16 non-interleaved buffers in-place.
-    void ProcessNonInterleavedInt16(int16_t *left, int16_t *right, uint32_t frameCount, double sampleRate);
+    uint32_t ProcessNonInterleavedInt16(int16_t *left, int16_t *right, uint32_t frameCount, double sampleRate);
 
     // Process stereo Int32 interleaved buffer in-place.
-    void ProcessInterleavedInt32(int32_t *interleaved, uint32_t frameCount, double sampleRate);
+    uint32_t ProcessInterleavedInt32(int32_t *interleaved, uint32_t frameCount, double sampleRate);
 
     // Process stereo Int32 non-interleaved buffers in-place.
-    void ProcessNonInterleavedInt32(int32_t *left, int32_t *right, uint32_t frameCount, double sampleRate);
+    uint32_t ProcessNonInterleavedInt32(int32_t *left, int32_t *right, uint32_t frameCount, double sampleRate);
 
     // Convenience helper for CoreAudio AudioBufferList (handles Float32, Int16, and Int32 interleaved/non-interleaved).
-    void ProcessAudioBufferList(AudioBufferList *ioData,
+    uint32_t ProcessAudioBufferList(AudioBufferList *ioData,
                                 uint32_t frameCount,
                                 const AudioStreamBasicDescription &asbd);
 
 private:
-    void ProcessChunk(float *left, float *right, uint32_t chunkFrames, bool is44k);
+    uint32_t ProcessChunk(float *left, float *right, uint32_t chunkFrames, bool is44k);
 
     double lastSampleRate_ = 0.0;
 
