@@ -3,7 +3,9 @@
 #include "RouteMonitor.h"
 #include "SpatialConfig.h"
 
+#import <CoreGraphics/CoreGraphics.h>
 #import <Foundation/Foundation.h>
+#import <QuartzCore/QuartzCore.h>
 #import <UIKit/UIKit.h>
 #import <objc/runtime.h>
 
@@ -551,11 +553,12 @@ shouldRecognizeSimultaneouslyWithGestureRecognizer:(UIGestureRecognizer *)otherG
 }
 
 - (void)refreshBorderColors {
-    CGColorRef border = [[UIColor labelColor] colorWithAlphaComponent:0.16].CGColor;
-    self.floatingButtonBlur.layer.borderColor = border;
+    UIColor *borderColor = [[UIColor labelColor] colorWithAlphaComponent:0.16];
+    UIColor *separatorBorderColor = [[UIColor separatorColor] colorWithAlphaComponent:0.45];
+    self.floatingButtonBlur.layer.borderColor = borderColor.CGColor;
     self.statusDotView.layer.borderColor = [UIColor systemBackgroundColor].CGColor;
-    self.panelCardBlurView.layer.borderColor = [[UIColor separatorColor] colorWithAlphaComponent:0.45].CGColor;
-    self.toastBlurView.layer.borderColor = border;
+    self.panelCardBlurView.layer.borderColor = separatorBorderColor.CGColor;
+    self.toastBlurView.layer.borderColor = borderColor.CGColor;
 }
 
 #pragma mark - Hit Testing & Floating Button Layout
@@ -596,9 +599,9 @@ shouldRecognizeSimultaneouslyWithGestureRecognizer:(UIGestureRecognizer *)otherG
 - (void)scheduleIdleDim {
     self.dimToken += 1;
     NSUInteger token = self.dimToken;
-    __weak typeof(self) weakSelf = self;
+    __weak SpatialOverlayController *weakSelf = self;
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(3.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-        __strong typeof(weakSelf) strongSelf = weakSelf;
+        SpatialOverlayController *strongSelf = weakSelf;
         if (!strongSelf || strongSelf.dimToken != token) return;
         if (strongSelf.panelVisible || strongSelf.isDraggingButton || strongSelf.floatingButtonContainer.hidden) return;
         [UIView animateWithDuration:0.35 animations:^{
@@ -861,9 +864,9 @@ shouldRecognizeSimultaneouslyWithGestureRecognizer:(UIGestureRecognizer *)otherG
         self.toastBlurView.alpha = 1.0;
     }];
 
-    __weak typeof(self) weakSelf = self;
+    __weak SpatialOverlayController *weakSelf = self;
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-        __strong typeof(weakSelf) strongSelf = weakSelf;
+        SpatialOverlayController *strongSelf = weakSelf;
         if (!strongSelf || strongSelf.toastToken != token) return;
         [UIView animateWithDuration:0.25 animations:^{
             strongSelf.toastBlurView.alpha = 0.0;
@@ -877,9 +880,9 @@ shouldRecognizeSimultaneouslyWithGestureRecognizer:(UIGestureRecognizer *)otherG
 
 - (void)startLiveRefreshTimer {
     [self stopLiveRefreshTimer];
-    __weak typeof(self) weakSelf = self;
+    __weak SpatialOverlayController *weakSelf = self;
     self.liveRefreshTimer = [NSTimer scheduledTimerWithTimeInterval:0.5 repeats:YES block:^(__unused NSTimer *timer) {
-        __strong typeof(weakSelf) strongSelf = weakSelf;
+        SpatialOverlayController *strongSelf = weakSelf;
         if (strongSelf && strongSelf.panelVisible) {
             [strongSelf refreshAllState];
         }

@@ -33,6 +33,8 @@ CFLAGS   := $(ARCH) $(MIN_IOS) -isysroot $(SDK) -O3 -fPIC -I$(FISHHOOK_DIR)
 FRAMEWORKS := \
 	-framework Foundation \
 	-framework UIKit \
+	-framework CoreGraphics \
+	-framework QuartzCore \
 	-framework AVFoundation \
 	-framework AudioToolbox \
 	-framework Accelerate \
