@@ -41,8 +41,7 @@ ScopedDspGuard::~ScopedDspGuard() {
 
 bool PipelineCoordinator::TryAcquire(AudioPipelineKind kind) {
     if (kind == AudioPipelineKind::None) return false;
-    if (tDspDepth > 0) return false;
-
+    
     const int desired = static_cast<int>(kind);
     const uint64_t now = MonotonicNowNs();
 
