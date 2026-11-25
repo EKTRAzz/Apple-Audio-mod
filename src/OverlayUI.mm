@@ -2,15 +2,18 @@
 #include "PipelineCoordinator.h"
 #include "RouteMonitor.h"
 #include "SpatialConfig.h"
+#include "SpatialEngine.h"
 
 #import <CoreGraphics/CoreGraphics.h>
 #import <Foundation/Foundation.h>
 #import <QuartzCore/QuartzCore.h>
 #import <UIKit/UIKit.h>
+#import <UniformTypeIdentifiers/UniformTypeIdentifiers.h>
 #import <objc/runtime.h>
 
 #include <algorithm>
 #include <cmath>
+#include <string>
 
 namespace {
 static const void *kHostTapInstalledKey = &kHostTapInstalledKey;
@@ -52,7 +55,7 @@ shouldRecognizeSimultaneouslyWithGestureRecognizer:(UIGestureRecognizer *)otherG
 }
 @end
 
-@interface SpatialOverlayController : UIViewController
+@interface SpatialOverlayController : UIViewController <UIDocumentPickerDelegate>
 
 // Floating button views
 @property (nonatomic, strong) UIView *floatingButtonContainer;
@@ -65,14 +68,32 @@ shouldRecognizeSimultaneouslyWithGestureRecognizer:(UIGestureRecognizer *)otherG
 @property (nonatomic, strong) UIVisualEffectView *panelCardBlurView;
 @property (nonatomic, strong) SpatialPanelBackdropDelegate *backdropDelegate;
 
-// Control panel interactive elements & status labels
+// Header & enable switch
 @property (nonatomic, strong) UILabel *headerBadgeLabel;
 @property (nonatomic, strong) UIView *headerBadgeContainer;
 @property (nonatomic, strong) UISwitch *enableSwitch;
+
+// HRIR Profile & Mode
+@property (nonatomic, strong) UISegmentedControl *hrirSegmentedControl;
+@property (nonatomic, strong) UILabel *customWavLabel;
 @property (nonatomic, strong) UISegmentedControl *modeSegmentedControl;
 @property (nonatomic, strong) UILabel *modeDescriptionLabel;
-@property (nonatomic, strong) UIView *statusBoxView;
 
+// DSP Tuning sliders
+@property (nonatomic, strong) UISlider *mixSlider;
+@property (nonatomic, strong) UILabel *mixValueLabel;
+@property (nonatomic, strong) UISlider *gainSlider;
+@property (nonatomic, strong) UILabel *gainValueLabel;
+@property (nonatomic, strong) UISlider *widthSlider;
+@property (nonatomic, strong) UILabel *widthValueLabel;
+
+// Hook / Pipeline selector
+@property (nonatomic, strong) UISegmentedControl *hookModeSegmentedControl;
+@property (nonatomic, strong) UILabel *hookAutoHintLabel;
+@property (nonatomic, strong) UIStackView *customHooksStack;
+@property (nonatomic, strong) NSArray<UISwitch *> *pipelineSwitches;
+
+// Live status labels
 @property (nonatomic, strong) UILabel *stateValueLabel;
 @property (nonatomic, strong) UILabel *routeValueLabel;
 @property (nonatomic, strong) UILabel *pipelineValueLabel;
@@ -223,6 +244,64 @@ shouldRecognizeSimultaneouslyWithGestureRecognizer:(UIGestureRecognizer *)otherG
     [self refreshBorderColors];
 }
 
+- (UIView *)makeSectionCardWithStack:(UIStackView **)outStack spacing:(CGFloat)spacing {
+    UIView *box = [[UIView alloc] init];
+    box.translatesAutoresizingMaskIntoConstraints = NO;
+    box.backgroundColor = [UIColor secondarySystemFillColor];
+    box.layer.cornerRadius = 12.0;
+
+    UIStackView *stack = [[UIStackView alloc] init];
+    stack.translatesAutoresizingMaskIntoConstraints = NO;
+    stack.axis = UILayoutConstraintAxisVertical;
+    stack.spacing = spacing;
+    [box addSubview:stack];
+
+    [NSLayoutConstraint activateConstraints:@[
+        [stack.topAnchor constraintEqualToAnchor:box.topAnchor constant:11.0],
+        [stack.bottomAnchor constraintEqualToAnchor:box.bottomAnchor constant:-11.0],
+        [stack.leadingAnchor constraintEqualToAnchor:box.leadingAnchor constant:12.0],
+        [stack.trailingAnchor constraintEqualToAnchor:box.trailingAnchor constant:-12.0],
+    ]];
+
+    if (outStack) *outStack = stack;
+    return box;
+}
+
+- (UIStackView *)makeSliderRowWithTitle:(NSString *)title
+                                    min:(float)minVal
+                                    max:(float)maxVal
+                                 action:(SEL)action
+                              sliderOut:(UISlider **)sliderOut
+                          valueLabelOut:(UILabel **)labelOut {
+    UILabel *titleLbl = [[UILabel alloc] init];
+    titleLbl.text = title;
+    titleLbl.font = [UIFont systemFontOfSize:13.0 weight:UIFontWeightMedium];
+    titleLbl.textColor = [UIColor labelColor];
+
+    UILabel *valLbl = [[UILabel alloc] init];
+    valLbl.font = [UIFont monospacedDigitSystemFontOfSize:12.5 weight:UIFontWeightSemibold];
+    valLbl.textColor = [UIColor secondaryLabelColor];
+    valLbl.textAlignment = NSTextAlignmentRight;
+
+    UIStackView *topRow = [[UIStackView alloc] initWithArrangedSubviews:@[titleLbl, valLbl]];
+    topRow.axis = UILayoutConstraintAxisHorizontal;
+    topRow.alignment = UIStackViewAlignmentCenter;
+
+    UISlider *slider = [[UISlider alloc] init];
+    slider.minimumValue = minVal;
+    slider.maximumValue = maxVal;
+    slider.continuous = YES;
+    [slider addTarget:self action:action forControlEvents:UIControlEventValueChanged];
+
+    UIStackView *wrap = [[UIStackView alloc] initWithArrangedSubviews:@[topRow, slider]];
+    wrap.axis = UILayoutConstraintAxisVertical;
+    wrap.spacing = 2.0;
+
+    if (sliderOut) *sliderOut = slider;
+    if (labelOut) *labelOut = valLbl;
+    return wrap;
+}
+
 - (void)buildControlPanel {
     UIView *backdrop = [[UIView alloc] initWithFrame:self.view.bounds];
     backdrop.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
@@ -261,7 +340,7 @@ shouldRecognizeSimultaneouslyWithGestureRecognizer:(UIGestureRecognizer *)otherG
     UIStackView *rootStack = [[UIStackView alloc] init];
     rootStack.translatesAutoresizingMaskIntoConstraints = NO;
     rootStack.axis = UILayoutConstraintAxisVertical;
-    rootStack.spacing = 14.0;
+    rootStack.spacing = 12.0;
     [scrollView addSubview:rootStack];
 
     // 1. Header row
@@ -361,36 +440,152 @@ shouldRecognizeSimultaneouslyWithGestureRecognizer:(UIGestureRecognizer *)otherG
     enableRow.spacing = 10.0;
     [rootStack addArrangedSubview:enableRow];
 
-    // 3. Mode segmented control
-    UILabel *modeTitle = [[UILabel alloc] init];
-    modeTitle.text = @"Processing Mode";
-    modeTitle.font = [UIFont systemFontOfSize:13.0 weight:UIFontWeightSemibold];
-    modeTitle.textColor = [UIColor secondaryLabelColor];
+    // 3. HRIR Profile & Mode Card
+    UIStackView *hrirStack = nil;
+    UIView *hrirBox = [self makeSectionCardWithStack:&hrirStack spacing:8.0];
 
-    UISegmentedControl *seg = [[UISegmentedControl alloc] initWithItems:@[@"Matrix (Upmix)", @"Front (1:1)"]];
-    [seg addTarget:self action:@selector(onModeSegmentChanged:) forControlEvents:UIControlEventValueChanged];
+    UILabel *hrirHeader = [[UILabel alloc] init];
+    hrirHeader.text = @"HRIR PROFILE & MODE";
+    hrirHeader.font = [UIFont systemFontOfSize:11.0 weight:UIFontWeightBold];
+    hrirHeader.textColor = [UIColor secondaryLabelColor];
+    [hrirStack addArrangedSubview:hrirHeader];
+
+    UISegmentedControl *hrirSeg = [[UISegmentedControl alloc] initWithItems:@[@"Apple Pro 2", @"Custom .wav"]];
+    [hrirSeg addTarget:self action:@selector(onHrirSegmentChanged:) forControlEvents:UIControlEventValueChanged];
+    [hrirStack addArrangedSubview:hrirSeg];
+
+    UILabel *wavLbl = [[UILabel alloc] init];
+    wavLbl.font = [UIFont systemFontOfSize:12.0 weight:UIFontWeightRegular];
+    wavLbl.textColor = [UIColor secondaryLabelColor];
+    wavLbl.lineBreakMode = NSLineBreakByTruncatingMiddle;
+
+    UIButton *importBtn = [UIButton buttonWithType:UIButtonTypeSystem];
+    importBtn.backgroundColor = [UIColor tertiarySystemFillColor];
+    importBtn.layer.cornerRadius = 8.0;
+    importBtn.contentEdgeInsets = UIEdgeInsetsMake(5.0, 10.0, 5.0, 10.0);
+    importBtn.titleLabel.font = [UIFont systemFontOfSize:12.0 weight:UIFontWeightSemibold];
+    [importBtn setTitle:@"Import .wav" forState:UIControlStateNormal];
+    [importBtn setContentHuggingPriority:UILayoutPriorityRequired forAxis:UILayoutConstraintAxisHorizontal];
+    [importBtn setContentCompressionResistancePriority:UILayoutPriorityRequired forAxis:UILayoutConstraintAxisHorizontal];
+    [importBtn addTarget:self action:@selector(onImportWavTapped:) forControlEvents:UIControlEventTouchUpInside];
+
+    UIStackView *wavRow = [[UIStackView alloc] initWithArrangedSubviews:@[wavLbl, importBtn]];
+    wavRow.axis = UILayoutConstraintAxisHorizontal;
+    wavRow.alignment = UIStackViewAlignmentCenter;
+    wavRow.spacing = 8.0;
+    [hrirStack addArrangedSubview:wavRow];
+
+    UISegmentedControl *modeSeg = [[UISegmentedControl alloc] initWithItems:@[@"Matrix (Upmix)", @"Front (1:1)"]];
+    [modeSeg addTarget:self action:@selector(onModeSegmentChanged:) forControlEvents:UIControlEventValueChanged];
+    [hrirStack addArrangedSubview:modeSeg];
 
     UILabel *modeDesc = [[UILabel alloc] init];
-    modeDesc.font = [UIFont systemFontOfSize:12.0 weight:UIFontWeightRegular];
+    modeDesc.font = [UIFont systemFontOfSize:11.5 weight:UIFontWeightRegular];
     modeDesc.textColor = [UIColor secondaryLabelColor];
     modeDesc.numberOfLines = 2;
+    [hrirStack addArrangedSubview:modeDesc];
 
-    UIStackView *modeStack = [[UIStackView alloc] initWithArrangedSubviews:@[modeTitle, seg, modeDesc]];
-    modeStack.axis = UILayoutConstraintAxisVertical;
-    modeStack.spacing = 6.0;
-    [rootStack addArrangedSubview:modeStack];
+    [rootStack addArrangedSubview:hrirBox];
 
-    // 4. Live Status box
-    UIView *statusBox = [[UIView alloc] init];
-    statusBox.translatesAutoresizingMaskIntoConstraints = NO;
-    statusBox.backgroundColor = [UIColor secondarySystemFillColor];
-    statusBox.layer.cornerRadius = 12.0;
+    // 4. DSP Tuning Card (3 sliders + Reset)
+    UIStackView *tuningStack = nil;
+    UIView *tuningBox = [self makeSectionCardWithStack:&tuningStack spacing:8.0];
 
-    UIStackView *statusStack = [[UIStackView alloc] init];
-    statusStack.translatesAutoresizingMaskIntoConstraints = NO;
-    statusStack.axis = UILayoutConstraintAxisVertical;
-    statusStack.spacing = 8.0;
-    [statusBox addSubview:statusStack];
+    UILabel *tuningHeader = [[UILabel alloc] init];
+    tuningHeader.text = @"DSP TUNING";
+    tuningHeader.font = [UIFont systemFontOfSize:11.0 weight:UIFontWeightBold];
+    tuningHeader.textColor = [UIColor secondaryLabelColor];
+
+    UIButton *resetBtn = [UIButton buttonWithType:UIButtonTypeSystem];
+    resetBtn.titleLabel.font = [UIFont systemFontOfSize:12.0 weight:UIFontWeightSemibold];
+    [resetBtn setTitle:@"Reset" forState:UIControlStateNormal];
+    [resetBtn addTarget:self action:@selector(onResetTuningTapped:) forControlEvents:UIControlEventTouchUpInside];
+
+    UIStackView *tuningHdrRow = [[UIStackView alloc] initWithArrangedSubviews:@[tuningHeader, resetBtn]];
+    tuningHdrRow.axis = UILayoutConstraintAxisHorizontal;
+    tuningHdrRow.alignment = UIStackViewAlignmentCenter;
+    [tuningStack addArrangedSubview:tuningHdrRow];
+
+    UISlider *mixSl = nil, *gainSl = nil, *widthSl = nil;
+    UILabel *mixLbl = nil, *gainLbl = nil, *widthLbl = nil;
+    [tuningStack addArrangedSubview:[self makeSliderRowWithTitle:@"Spatial Mix"
+                                                             min:0.0f
+                                                             max:1.0f
+                                                          action:@selector(onMixSliderChanged:)
+                                                       sliderOut:&mixSl
+                                                   valueLabelOut:&mixLbl]];
+    [tuningStack addArrangedSubview:[self makeSliderRowWithTitle:@"Output Gain"
+                                                             min:-6.0f
+                                                             max:4.0f
+                                                          action:@selector(onGainSliderChanged:)
+                                                       sliderOut:&gainSl
+                                                   valueLabelOut:&gainLbl]];
+    [tuningStack addArrangedSubview:[self makeSliderRowWithTitle:@"Spatial Width"
+                                                             min:0.5f
+                                                             max:1.8f
+                                                          action:@selector(onWidthSliderChanged:)
+                                                       sliderOut:&widthSl
+                                                   valueLabelOut:&widthLbl]];
+
+    [rootStack addArrangedSubview:tuningBox];
+
+    // 5. Audio Hook / Pipeline Selector Card
+    UIStackView *hookStack = nil;
+    UIView *hookBox = [self makeSectionCardWithStack:&hookStack spacing:8.0];
+
+    UILabel *hookHeader = [[UILabel alloc] init];
+    hookHeader.text = @"AUDIO HOOKS";
+    hookHeader.font = [UIFont systemFontOfSize:11.0 weight:UIFontWeightBold];
+    hookHeader.textColor = [UIColor secondaryLabelColor];
+    [hookStack addArrangedSubview:hookHeader];
+
+    UISegmentedControl *hookSeg = [[UISegmentedControl alloc] initWithItems:@[@"Auto (Single-Winner)", @"Custom"]];
+    [hookSeg addTarget:self action:@selector(onHookModeChanged:) forControlEvents:UIControlEventValueChanged];
+    [hookStack addArrangedSubview:hookSeg];
+
+    UILabel *hookHint = [[UILabel alloc] init];
+    hookHint.text = @"Automatically locks onto the active audio pipeline.";
+    hookHint.font = [UIFont systemFontOfSize:11.5 weight:UIFontWeightRegular];
+    hookHint.textColor = [UIColor secondaryLabelColor];
+    hookHint.numberOfLines = 2;
+    [hookStack addArrangedSubview:hookHint];
+
+    UIStackView *customPipes = [[UIStackView alloc] init];
+    customPipes.axis = UILayoutConstraintAxisVertical;
+    customPipes.spacing = 6.0;
+
+    struct PipeInfo { int kind; NSString *name; };
+    const PipeInfo kPipes[] = {
+        { 1, @"AudioUnit / AVAudioEngine" },
+        { 2, @"AudioQueue (PCM)" },
+        { 3, @"AVPlayer (AudioMix Tap)" },
+        { 4, @"SampleBufferRenderer" },
+    };
+    NSMutableArray<UISwitch *> *switches = [NSMutableArray arrayWithCapacity:4];
+    for (int i = 0; i < 4; ++i) {
+        UILabel *pLbl = [[UILabel alloc] init];
+        pLbl.text = kPipes[i].name;
+        pLbl.font = [UIFont systemFontOfSize:13.0 weight:UIFontWeightRegular];
+        pLbl.textColor = [UIColor labelColor];
+
+        UISwitch *pSw = [[UISwitch alloc] init];
+        pSw.tag = kPipes[i].kind;
+        pSw.transform = CGAffineTransformMakeScale(0.82, 0.82);
+        [pSw addTarget:self action:@selector(onCustomPipelineSwitchChanged:) forControlEvents:UIControlEventValueChanged];
+        [switches addObject:pSw];
+
+        UIStackView *pRow = [[UIStackView alloc] initWithArrangedSubviews:@[pLbl, pSw]];
+        pRow.axis = UILayoutConstraintAxisHorizontal;
+        pRow.alignment = UIStackViewAlignmentCenter;
+        pRow.spacing = 8.0;
+        [customPipes addArrangedSubview:pRow];
+    }
+    [hookStack addArrangedSubview:customPipes];
+    [rootStack addArrangedSubview:hookBox];
+
+    // 6. Live Status box
+    UIStackView *statusStack = nil;
+    UIView *statusBox = [self makeSectionCardWithStack:&statusStack spacing:7.0];
 
     UILabel *statusHeader = [[UILabel alloc] init];
     statusHeader.text = @"LIVE STATUS";
@@ -407,16 +602,9 @@ shouldRecognizeSimultaneouslyWithGestureRecognizer:(UIGestureRecognizer *)otherG
     [statusStack addArrangedSubview:[self makeStatusRowWithTitle:@"Pipeline" valueLabelOut:&pipeVal]];
     [statusStack addArrangedSubview:[self makeStatusRowWithTitle:@"Sample Rate" valueLabelOut:&srVal]];
     srVal.font = [UIFont monospacedDigitSystemFontOfSize:12.5 weight:UIFontWeightMedium];
-
-    [NSLayoutConstraint activateConstraints:@[
-        [statusStack.topAnchor constraintEqualToAnchor:statusBox.topAnchor constant:11.0],
-        [statusStack.bottomAnchor constraintEqualToAnchor:statusBox.bottomAnchor constant:-11.0],
-        [statusStack.leadingAnchor constraintEqualToAnchor:statusBox.leadingAnchor constant:12.0],
-        [statusStack.trailingAnchor constraintEqualToAnchor:statusBox.trailingAnchor constant:-12.0],
-    ]];
     [rootStack addArrangedSubview:statusBox];
 
-    // 5. Footer: Hide button & tip
+    // 7. Footer: Hide button & tip
     UIButton *hideBtn = [UIButton buttonWithType:UIButtonTypeSystem];
     hideBtn.backgroundColor = [UIColor tertiarySystemFillColor];
     hideBtn.layer.cornerRadius = 10.0;
@@ -437,17 +625,17 @@ shouldRecognizeSimultaneouslyWithGestureRecognizer:(UIGestureRecognizer *)otherG
 
     // Layout constraints for panel card inside safe area
     UILayoutGuide *safe = backdrop.safeAreaLayoutGuide;
-    NSLayoutConstraint *cardWidth = [shadowContainer.widthAnchor constraintEqualToConstant:340.0];
+    NSLayoutConstraint *cardWidth = [shadowContainer.widthAnchor constraintEqualToConstant:344.0];
     cardWidth.priority = UILayoutPriorityDefaultHigh;
 
-    NSLayoutConstraint *cardHeightMatch = [shadowContainer.heightAnchor constraintEqualToAnchor:rootStack.heightAnchor constant:36.0];
+    NSLayoutConstraint *cardHeightMatch = [shadowContainer.heightAnchor constraintEqualToAnchor:rootStack.heightAnchor constant:32.0];
     cardHeightMatch.priority = UILayoutPriorityDefaultLow;
 
     [NSLayoutConstraint activateConstraints:@[
         [shadowContainer.centerXAnchor constraintEqualToAnchor:safe.centerXAnchor],
         [shadowContainer.centerYAnchor constraintEqualToAnchor:safe.centerYAnchor],
         cardWidth,
-        [shadowContainer.widthAnchor constraintLessThanOrEqualToAnchor:safe.widthAnchor constant:-28.0],
+        [shadowContainer.widthAnchor constraintLessThanOrEqualToAnchor:safe.widthAnchor constant:-24.0],
         [shadowContainer.heightAnchor constraintLessThanOrEqualToAnchor:safe.heightAnchor constant:-24.0],
         cardHeightMatch,
 
@@ -461,11 +649,11 @@ shouldRecognizeSimultaneouslyWithGestureRecognizer:(UIGestureRecognizer *)otherG
         [scrollView.leadingAnchor constraintEqualToAnchor:blurView.contentView.leadingAnchor],
         [scrollView.trailingAnchor constraintEqualToAnchor:blurView.contentView.trailingAnchor],
 
-        [rootStack.topAnchor constraintEqualToAnchor:scrollView.contentLayoutGuide.topAnchor constant:18.0],
-        [rootStack.bottomAnchor constraintEqualToAnchor:scrollView.contentLayoutGuide.bottomAnchor constant:-18.0],
-        [rootStack.leadingAnchor constraintEqualToAnchor:scrollView.contentLayoutGuide.leadingAnchor constant:18.0],
-        [rootStack.trailingAnchor constraintEqualToAnchor:scrollView.contentLayoutGuide.trailingAnchor constant:-18.0],
-        [rootStack.widthAnchor constraintEqualToAnchor:scrollView.frameLayoutGuide.widthAnchor constant:-36.0],
+        [rootStack.topAnchor constraintEqualToAnchor:scrollView.contentLayoutGuide.topAnchor constant:16.0],
+        [rootStack.bottomAnchor constraintEqualToAnchor:scrollView.contentLayoutGuide.bottomAnchor constant:-16.0],
+        [rootStack.leadingAnchor constraintEqualToAnchor:scrollView.contentLayoutGuide.leadingAnchor constant:16.0],
+        [rootStack.trailingAnchor constraintEqualToAnchor:scrollView.contentLayoutGuide.trailingAnchor constant:-16.0],
+        [rootStack.widthAnchor constraintEqualToAnchor:scrollView.frameLayoutGuide.widthAnchor constant:-32.0],
     ]];
 
     [self.view addSubview:backdrop];
@@ -477,9 +665,24 @@ shouldRecognizeSimultaneouslyWithGestureRecognizer:(UIGestureRecognizer *)otherG
     self.headerBadgeContainer = badgeWrap;
     self.headerBadgeLabel = badgeLabel;
     self.enableSwitch = enableSw;
-    self.modeSegmentedControl = seg;
+
+    self.hrirSegmentedControl = hrirSeg;
+    self.customWavLabel = wavLbl;
+    self.modeSegmentedControl = modeSeg;
     self.modeDescriptionLabel = modeDesc;
-    self.statusBoxView = statusBox;
+
+    self.mixSlider = mixSl;
+    self.mixValueLabel = mixLbl;
+    self.gainSlider = gainSl;
+    self.gainValueLabel = gainLbl;
+    self.widthSlider = widthSl;
+    self.widthValueLabel = widthLbl;
+
+    self.hookModeSegmentedControl = hookSeg;
+    self.hookAutoHintLabel = hookHint;
+    self.customHooksStack = customPipes;
+    self.pipelineSwitches = [switches copy];
+
     self.stateValueLabel = stateVal;
     self.routeValueLabel = routeVal;
     self.pipelineValueLabel = pipeVal;
@@ -564,7 +767,7 @@ shouldRecognizeSimultaneouslyWithGestureRecognizer:(UIGestureRecognizer *)otherG
 #pragma mark - Hit Testing & Floating Button Layout
 
 - (BOOL)shouldCaptureHitAtWindowPoint:(CGPoint)point {
-    if (self.panelVisible) {
+    if (self.panelVisible || self.presentedViewController != nil) {
         return YES;
     }
     if (!self.floatingButtonContainer.hidden && self.floatingButtonContainer.alpha > 0.01) {
@@ -733,9 +936,27 @@ shouldRecognizeSimultaneouslyWithGestureRecognizer:(UIGestureRecognizer *)otherG
     return [NSString stringWithFormat:@"%ld Hz", rounded];
 }
 
+- (void)refreshTuningLabelsOnly {
+    const float mix = spatial::SpatialConfig::SpatialMix();
+    const float gainDb = spatial::SpatialConfig::OutputGainDb();
+    const float width = spatial::SpatialConfig::SpatialWidth();
+
+    self.mixValueLabel.text = [NSString stringWithFormat:@"%ld%%", std::lround(mix * 100.0f)];
+    if (gainDb > 0.05f) {
+        self.gainValueLabel.text = [NSString stringWithFormat:@"+%.1f dB", gainDb];
+    } else if (std::fabs(gainDb) <= 0.05f) {
+        self.gainValueLabel.text = @"0.0 dB";
+    } else {
+        self.gainValueLabel.text = [NSString stringWithFormat:@"%.1f dB", gainDb];
+    }
+    self.widthValueLabel.text = [NSString stringWithFormat:@"%ld%%", std::lround(width * 100.0f)];
+}
+
 - (void)refreshAllState {
     const bool enabled = spatial::SpatialConfig::IsEnabled();
     const spatial::SpatialMode mode = spatial::SpatialConfig::CurrentMode();
+    const spatial::HrirSource hrirSrc = spatial::SpatialConfig::ActiveHrirSource();
+    const spatial::HookSelectionMode hookMode = spatial::SpatialConfig::HookMode();
     const spatial::RouteSnapshot snap = spatial::RouteMonitor::GetSnapshot();
     const bool active = enabled && snap.routeEligible;
 
@@ -748,10 +969,23 @@ shouldRecognizeSimultaneouslyWithGestureRecognizer:(UIGestureRecognizer *)otherG
         self.statusDotView.backgroundColor = [UIColor systemOrangeColor];
     }
 
-    // 2. Panel controls
+    // 2. Enable & HRIR profile / mode controls
     if (self.enableSwitch.isOn != (enabled ? YES : NO)) {
         [self.enableSwitch setOn:(enabled ? YES : NO) animated:self.panelVisible];
     }
+
+    NSInteger hrirIdx = (hrirSrc == spatial::HrirSource::CustomWav && spatial::HasLoadedCustomProfile()) ? 1 : 0;
+    if (self.hrirSegmentedControl.selectedSegmentIndex != hrirIdx) {
+        self.hrirSegmentedControl.selectedSegmentIndex = hrirIdx;
+    }
+
+    NSString *wavName = spatial::SpatialConfig::CustomWavFileName();
+    if (wavName.length > 0 && spatial::HasLoadedCustomProfile()) {
+        self.customWavLabel.text = [NSString stringWithFormat:@"File: %@", wavName];
+    } else {
+        self.customWavLabel.text = @"No custom .wav imported";
+    }
+
     NSInteger segIdx = (mode == spatial::SpatialMode::Front) ? 1 : 0;
     if (self.modeSegmentedControl.selectedSegmentIndex != segIdx) {
         self.modeSegmentedControl.selectedSegmentIndex = segIdx;
@@ -760,7 +994,37 @@ shouldRecognizeSimultaneouslyWithGestureRecognizer:(UIGestureRecognizer *)otherG
         ? @"Pure 1:1 front left/right binaural HRIR without surround upmix."
         : @"14-channel surround upmix with full HeSuVi binaural room cues.";
 
-    // 3. Header badge
+    // 3. DSP Tuning sliders
+    const float mix = spatial::SpatialConfig::SpatialMix();
+    const float gainDb = spatial::SpatialConfig::OutputGainDb();
+    const float width = spatial::SpatialConfig::SpatialWidth();
+    if (!self.mixSlider.isTracking && std::fabs(self.mixSlider.value - mix) > 1e-3f) {
+        self.mixSlider.value = mix;
+    }
+    if (!self.gainSlider.isTracking && std::fabs(self.gainSlider.value - gainDb) > 1e-2f) {
+        self.gainSlider.value = gainDb;
+    }
+    if (!self.widthSlider.isTracking && std::fabs(self.widthSlider.value - width) > 1e-3f) {
+        self.widthSlider.value = width;
+    }
+    [self refreshTuningLabelsOnly];
+
+    // 4. Hook / Pipeline mode & switches
+    NSInteger hookIdx = (hookMode == spatial::HookSelectionMode::Custom) ? 1 : 0;
+    if (self.hookModeSegmentedControl.selectedSegmentIndex != hookIdx) {
+        self.hookModeSegmentedControl.selectedSegmentIndex = hookIdx;
+    }
+    const BOOL isCustomHook = (hookMode == spatial::HookSelectionMode::Custom);
+    self.hookAutoHintLabel.hidden = isCustomHook;
+    self.customHooksStack.hidden = !isCustomHook;
+    for (UISwitch *sw in self.pipelineSwitches) {
+        BOOL allowed = spatial::SpatialConfig::IsPipelineEnabledInCustom(static_cast<int>(sw.tag)) ? YES : NO;
+        if (sw.isOn != allowed) {
+            [sw setOn:allowed animated:NO];
+        }
+    }
+
+    // 5. Header badge
     if (!enabled) {
         self.headerBadgeLabel.text = @"OFF";
         self.headerBadgeLabel.textColor = [UIColor secondaryLabelColor];
@@ -775,7 +1039,7 @@ shouldRecognizeSimultaneouslyWithGestureRecognizer:(UIGestureRecognizer *)otherG
         self.headerBadgeContainer.backgroundColor = [[UIColor systemOrangeColor] colorWithAlphaComponent:0.16];
     }
 
-    // 4. Live status labels
+    // 6. Live status labels
     self.stateValueLabel.text = [self formatBypassStateText:enabled snapshot:snap];
     if (!enabled) {
         self.stateValueLabel.textColor = [UIColor secondaryLabelColor];
@@ -896,6 +1160,69 @@ shouldRecognizeSimultaneouslyWithGestureRecognizer:(UIGestureRecognizer *)otherG
     }
 }
 
+#pragma mark - WAV Document Picker
+
+- (void)presentWavDocumentPicker {
+    UTType *wavType = [UTType typeWithFilenameExtension:@"wav" conformingToType:UTTypeAudio];
+    NSArray<UTType *> *types = wavType ? @[wavType, UTTypeAudio] : @[UTTypeAudio];
+    UIDocumentPickerViewController *picker = [[UIDocumentPickerViewController alloc] initForOpeningContentTypes:types asCopy:YES];
+    picker.delegate = self;
+    picker.allowsMultipleSelection = NO;
+    [self presentViewController:picker animated:YES completion:nil];
+}
+
+- (void)documentPicker:(UIDocumentPickerViewController *)controller didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls {
+    (void)controller;
+    NSURL *pickedUrl = urls.firstObject;
+    if (!pickedUrl) {
+        [self refreshAllState];
+        return;
+    }
+
+    NSString *origName = pickedUrl.lastPathComponent ?: @"custom_hrir.wav";
+    NSString *destPath = spatial::SpatialConfig::CustomWavStoragePath();
+    NSString *tmpPath = [destPath stringByAppendingString:@".tmp"];
+
+    NSFileManager *fm = [NSFileManager defaultManager];
+    [fm removeItemAtPath:tmpPath error:nil];
+
+    NSError *copyErr = nil;
+    if (![fm copyItemAtURL:pickedUrl toURL:[NSURL fileURLWithPath:tmpPath] error:&copyErr]) {
+        [self showErrorAlertWithTitle:@"Import Failed"
+                              message:(copyErr.localizedDescription ?: @"Unable to copy selected WAV file.")];
+        [self refreshAllState];
+        return;
+    }
+
+    std::string loadErr;
+    if (spatial::LoadCustomWavProfile([tmpPath UTF8String], loadErr)) {
+        [fm removeItemAtPath:destPath error:nil];
+        [fm moveItemAtPath:tmpPath toPath:destPath error:nil];
+        spatial::SpatialConfig::SetCustomWavFileName(origName);
+        spatial::SpatialConfig::SetActiveHrirSource(spatial::HrirSource::CustomWav);
+        [self refreshAllState];
+        [self showToast:[NSString stringWithFormat:@"Loaded: %@", origName]];
+    } else {
+        [fm removeItemAtPath:tmpPath error:nil];
+        NSString *msg = [NSString stringWithUTF8String:loadErr.c_str()] ?: @"Unsupported WAV file.";
+        [self showErrorAlertWithTitle:@"Unsupported WAV File" message:msg];
+        [self refreshAllState];
+    }
+}
+
+- (void)documentPickerWasCancelled:(UIDocumentPickerViewController *)controller {
+    (void)controller;
+    [self refreshAllState];
+}
+
+- (void)showErrorAlertWithTitle:(NSString *)title message:(NSString *)message {
+    UIAlertController *alert = [UIAlertController alertControllerWithTitle:title
+                                                                   message:message
+                                                            preferredStyle:UIAlertControllerStyleAlert];
+    [alert addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleDefault handler:nil]];
+    [self presentViewController:alert animated:YES completion:nil];
+}
+
 #pragma mark - Actions & Gestures
 
 - (void)handleExternalStateUpdate:(NSNotification *)note {
@@ -1011,6 +1338,33 @@ shouldRecognizeSimultaneouslyWithGestureRecognizer:(UIGestureRecognizer *)otherG
     [self wakeFloatingButton];
 }
 
+- (void)onHrirSegmentChanged:(UISegmentedControl *)sender {
+    if (sender.selectedSegmentIndex == 1) {
+        if (spatial::UseCustomProfile()) {
+            spatial::SpatialConfig::SetActiveHrirSource(spatial::HrirSource::CustomWav);
+        } else {
+            NSString *savedPath = spatial::SpatialConfig::CustomWavStoragePath();
+            std::string err;
+            if (savedPath && spatial::LoadCustomWavProfile([savedPath UTF8String], err)) {
+                spatial::SpatialConfig::SetActiveHrirSource(spatial::HrirSource::CustomWav);
+            } else {
+                [self presentWavDocumentPicker];
+                return;
+            }
+        }
+    } else {
+        spatial::UseBuiltInProfile();
+        spatial::SpatialConfig::SetActiveHrirSource(spatial::HrirSource::BuiltIn);
+    }
+    [self refreshAllState];
+    [self wakeFloatingButton];
+}
+
+- (void)onImportWavTapped:(UIButton *)sender {
+    (void)sender;
+    [self presentWavDocumentPicker];
+}
+
 - (void)onModeSegmentChanged:(UISegmentedControl *)sender {
     spatial::SpatialMode mode = (sender.selectedSegmentIndex == 1)
         ? spatial::SpatialMode::Front
@@ -1018,6 +1372,42 @@ shouldRecognizeSimultaneouslyWithGestureRecognizer:(UIGestureRecognizer *)otherG
     spatial::SpatialConfig::SetMode(mode);
     [self refreshAllState];
     [self wakeFloatingButton];
+}
+
+- (void)onMixSliderChanged:(UISlider *)sender {
+    spatial::SpatialConfig::SetSpatialMix(sender.value);
+    [self refreshTuningLabelsOnly];
+}
+
+- (void)onGainSliderChanged:(UISlider *)sender {
+    float snapped = std::roundf(sender.value * 2.0f) * 0.5f;
+    spatial::SpatialConfig::SetOutputGainDb(snapped);
+    [self refreshTuningLabelsOnly];
+}
+
+- (void)onWidthSliderChanged:(UISlider *)sender {
+    spatial::SpatialConfig::SetSpatialWidth(sender.value);
+    [self refreshTuningLabelsOnly];
+}
+
+- (void)onResetTuningTapped:(UIButton *)sender {
+    (void)sender;
+    spatial::SpatialConfig::ResetTuning();
+    [self refreshAllState];
+    [self showToast:@"Tuning reset to HeSuVi defaults"];
+}
+
+- (void)onHookModeChanged:(UISegmentedControl *)sender {
+    spatial::HookSelectionMode mode = (sender.selectedSegmentIndex == 1)
+        ? spatial::HookSelectionMode::Custom
+        : spatial::HookSelectionMode::Auto;
+    spatial::SpatialConfig::SetHookMode(mode);
+    [self refreshAllState];
+}
+
+- (void)onCustomPipelineSwitchChanged:(UISwitch *)sender {
+    spatial::SpatialConfig::SetPipelineEnabledInCustom(static_cast<int>(sender.tag), sender.isOn);
+    [self refreshAllState];
 }
 
 - (void)onHideButtonTapped:(UIButton *)sender {

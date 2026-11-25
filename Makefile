@@ -33,6 +33,7 @@ CFLAGS   := $(ARCH) $(MIN_IOS) -isysroot $(SDK) -O3 -fPIC -I$(FISHHOOK_DIR)
 FRAMEWORKS := \
 	-framework Foundation \
 	-framework UIKit \
+	-framework UniformTypeIdentifiers \
 	-framework CoreGraphics \
 	-framework QuartzCore \
 	-framework AVFoundation \
@@ -45,6 +46,7 @@ SRCS_MM := \
 	src/PipelineCoordinator.mm \
 	src/SpatialConfig.mm \
 	src/RouteMonitor.mm \
+	src/WavLoader.mm \
 	src/SpatialEngine.mm \
 	src/OverlayUI.mm \
 	src/HookAudioUnit.mm \

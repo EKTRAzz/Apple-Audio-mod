@@ -108,7 +108,8 @@ OSStatus WrappedRenderCallback(void *inRefCon,
     if (ioActionFlags && (*ioActionFlags & kAudioUnitRenderAction_OutputIsSilence)) {
         return status;
     }
-    const bool wantSpatial = RouteMonitor::ShouldProcessAudio();
+    const bool wantSpatial = RouteMonitor::ShouldProcessAudio() &&
+                             SpatialConfig::IsPipelineAllowed(static_cast<int>(AudioPipelineKind::AudioUnit));
     if (!ctx->dsp || !ctx->dsp->NeedsProcessing(wantSpatial)) {
         return status;
     }
@@ -119,7 +120,7 @@ OSStatus WrappedRenderCallback(void *inRefCon,
                                          inNumberFrames,
                                          EffectiveAsbd(ctx),
                                          wantSpatial,
-                                         SpatialConfig::CurrentMode());
+                                         CurrentDspParamsFromConfig());
     }
     return status;
 }
@@ -146,7 +147,8 @@ OSStatus PostRenderNotifyCallback(void *inRefCon,
     if (!ctx || !ctx->dsp || ctx->hasWrappedCallback.load(std::memory_order_acquire)) {
         return noErr;
     }
-    const bool wantSpatial = RouteMonitor::ShouldProcessAudio();
+    const bool wantSpatial = RouteMonitor::ShouldProcessAudio() &&
+                             SpatialConfig::IsPipelineAllowed(static_cast<int>(AudioPipelineKind::AudioUnit));
     if (!ctx->dsp->NeedsProcessing(wantSpatial)) {
         return noErr;
     }
@@ -157,7 +159,7 @@ OSStatus PostRenderNotifyCallback(void *inRefCon,
                                          inNumberFrames,
                                          EffectiveAsbd(ctx),
                                          wantSpatial,
-                                         SpatialConfig::CurrentMode());
+                                         CurrentDspParamsFromConfig());
     }
     return noErr;
 }

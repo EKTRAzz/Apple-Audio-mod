@@ -103,7 +103,8 @@ void ProcessQueueBufferIfWinner(AudioQueueRef aq, AudioQueueBufferRef buf) {
     }
     if (!ctx || !ctx->dsp || ctx->asbd.mBytesPerFrame == 0) return;
 
-    const bool wantSpatial = RouteMonitor::ShouldProcessAudio();
+    const bool wantSpatial = RouteMonitor::ShouldProcessAudio() &&
+                             SpatialConfig::IsPipelineAllowed(static_cast<int>(AudioPipelineKind::AudioQueue));
     if (!ctx->dsp->NeedsProcessing(wantSpatial)) return;
 
     ScopedDspGuard guard;
@@ -114,7 +115,7 @@ void ProcessQueueBufferIfWinner(AudioQueueRef aq, AudioQueueBufferRef buf) {
     const uint32_t frameCount = buf->mAudioDataByteSize / ctx->asbd.mBytesPerFrame;
     if (frameCount == 0) return;
 
-    const SpatialMode mode = SpatialConfig::CurrentMode();
+    const SpatialDspParams params = CurrentDspParamsFromConfig();
     const bool isFloat = (ctx->asbd.mFormatFlags & kAudioFormatFlagIsFloat) != 0;
     const bool isNonInterleaved = (ctx->asbd.mFormatFlags & kAudioFormatFlagIsNonInterleaved) != 0;
     const bool isSignedInt = (ctx->asbd.mFormatFlags & kAudioFormatFlagIsSignedInteger) != 0;
@@ -124,19 +125,19 @@ void ProcessQueueBufferIfWinner(AudioQueueRef aq, AudioQueueBufferRef buf) {
                                             frameCount,
                                             ctx->asbd.mSampleRate,
                                             wantSpatial,
-                                            mode);
+                                            params);
     } else if (isSignedInt && ctx->asbd.mBitsPerChannel == 16 && !isNonInterleaved) {
         ctx->dsp->ProcessInterleavedInt16(static_cast<int16_t *>(buf->mAudioData),
                                           frameCount,
                                           ctx->asbd.mSampleRate,
                                           wantSpatial,
-                                          mode);
+                                          params);
     } else if (isSignedInt && ctx->asbd.mBitsPerChannel == 32 && !isNonInterleaved) {
         ctx->dsp->ProcessInterleavedInt32(static_cast<int32_t *>(buf->mAudioData),
                                           frameCount,
                                           ctx->asbd.mSampleRate,
                                           wantSpatial,
-                                          mode);
+                                          params);
     }
 }
 

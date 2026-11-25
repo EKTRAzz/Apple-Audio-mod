@@ -227,7 +227,8 @@ private:
         if (asbd.mChannelsPerFrame != 2 || !IsSupportedPcmSampleRate(asbd.mSampleRate)) {
             return nullptr;
         }
-        const bool wantSpatial = RouteMonitor::ShouldProcessAudio();
+        const bool wantSpatial = RouteMonitor::ShouldProcessAudio() &&
+                                 SpatialConfig::IsPipelineAllowed(static_cast<int>(AudioPipelineKind::SampleBufferRenderer));
         if (!dsp_ || !dsp_->NeedsProcessing(wantSpatial)) {
             return nullptr;
         }
@@ -312,7 +313,7 @@ private:
                                      static_cast<uint32_t>(numSamples),
                                      asbd,
                                      wantSpatial,
-                                     SpatialConfig::CurrentMode());
+                                     CurrentDspParamsFromConfig());
 
         CMSampleBufferRef outSb = nullptr;
         CMTime pts = CMSampleBufferGetPresentationTimeStamp(sb);
@@ -342,9 +343,8 @@ private:
             return nullptr;
         }
 
-        // If we haven't started decoding on this renderer yet and headphones aren't active,
-        // pass the original compressed buffer straight through.
-        if (!converter_ && !RouteMonitor::ShouldProcessAudio()) {
+        const bool pipeAllowed = SpatialConfig::IsPipelineAllowed(static_cast<int>(AudioPipelineKind::SampleBufferRenderer));
+        if (!converter_ && (!RouteMonitor::ShouldProcessAudio() || !pipeAllowed)) {
             return nullptr;
         }
 
@@ -433,7 +433,8 @@ private:
             return nullptr;
         }
 
-        const bool wantSpatial = RouteMonitor::ShouldProcessAudio();
+        const bool wantSpatial = RouteMonitor::ShouldProcessAudio() &&
+                                 SpatialConfig::IsPipelineAllowed(static_cast<int>(AudioPipelineKind::SampleBufferRenderer));
         if (dsp_ && dsp_->NeedsProcessing(wantSpatial)) {
             ScopedDspGuard guard;
             if (guard.entered && PipelineCoordinator::TryAcquire(AudioPipelineKind::SampleBufferRenderer)) {
@@ -442,7 +443,7 @@ private:
                                                    static_cast<uint32_t>(pcmL_.size()),
                                                    converterOutAsbd_.mSampleRate,
                                                    wantSpatial,
-                                                   SpatialConfig::CurrentMode());
+                                                   CurrentDspParamsFromConfig());
             }
         }
 

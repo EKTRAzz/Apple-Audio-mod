@@ -1,4 +1,5 @@
 #include "PipelineCoordinator.h"
+#include "SpatialConfig.h"
 
 #include <atomic>
 #include <time.h>
@@ -43,6 +44,17 @@ bool PipelineCoordinator::TryAcquire(AudioPipelineKind kind) {
     if (kind == AudioPipelineKind::None) return false;
 
     const int desired = static_cast<int>(kind);
+    if (!SpatialConfig::IsPipelineAllowed(desired)) {
+        // Release ownership immediately if the currently active pipeline was disabled by the user.
+        int expected = desired;
+        gActivePipeline.compare_exchange_strong(
+            expected,
+            static_cast<int>(AudioPipelineKind::None),
+            std::memory_order_acq_rel
+        );
+        return false;
+    }
+
     const uint64_t now = MonotonicNowNs();
 
     int current = gActivePipeline.load(std::memory_order_acquire);

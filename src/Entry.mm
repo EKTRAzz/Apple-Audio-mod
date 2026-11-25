@@ -37,6 +37,13 @@ static void SpatialAudioMultiHookInit() {
 
     // 2. Pre-compute 48 kHz & 44.1 kHz Matrix + Front True-Stereo HRIR FFT spectra.
     spatial::InitializeSharedSpectra();
+    if (spatial::SpatialConfig::ActiveHrirSource() == spatial::HrirSource::CustomWav) {
+        NSString *savedPath = spatial::SpatialConfig::CustomWavStoragePath();
+        std::string loadErr;
+        if (!savedPath || !spatial::LoadCustomWavProfile([savedPath UTF8String], loadErr)) {
+            spatial::SpatialConfig::SetActiveHrirSource(spatial::HrirSource::BuiltIn);
+        }
+    }
 
     // 3. Start lock-free AVAudioSession route & mode observer.
     spatial::RouteMonitor::Initialize();
