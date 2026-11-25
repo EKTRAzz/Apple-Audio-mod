@@ -32,6 +32,25 @@ bool IsSupportedCompressedFormat(AudioFormatID fmtId) {
             fmtId == kAudioFormatMPEGLayer3);
 }
 
+OSStatus CreatePcmSampleBuffer(CMBlockBufferRef data,
+                              CMFormatDescriptionRef format,
+                              const AudioStreamBasicDescription &asbd,
+                              CMItemCount frameCount,
+                              CMTime pts,
+                              CMSampleBufferRef *outBuffer) {
+    if ((asbd.mFormatFlags & kAudioFormatFlagIsNonInterleaved) == 0) {
+        return CMAudioSampleBufferCreateReadyWithPacketDescriptions(
+            kCFAllocatorDefault, data, format, frameCount, pts, nullptr, outBuffer);
+    }
+
+    // One frame spans the channel planes, so Core Media cannot use a sample size array.
+    const CMSampleTimingInfo timing{
+        CMTimeMake(1, static_cast<int32_t>(asbd.mSampleRate)), pts, kCMTimeInvalid
+    };
+    return CMSampleBufferCreateReady(
+        kCFAllocatorDefault, data, format, frameCount, 1, &timing, 0, nullptr, outBuffer);
+}
+
 struct CompressedDecodeFeed {
     const uint8_t *data = nullptr;
     size_t dataSize = 0;
@@ -224,7 +243,15 @@ private:
     CMSampleBufferRef ProcessLinearPcmLocked(CMSampleBufferRef sb,
                                              CMFormatDescriptionRef fmtDesc,
                                              const AudioStreamBasicDescription &asbd) {
-        if (asbd.mChannelsPerFrame != 2 || !IsSupportedPcmSampleRate(asbd.mSampleRate)) {
+        const auto flags = asbd.mFormatFlags;
+        const bool planar = (flags & kAudioFormatFlagIsNonInterleaved) != 0;
+        const bool float32 = (flags & kAudioFormatFlagIsFloat) && asbd.mBitsPerChannel == 32;
+        const bool signedInt = (flags & kAudioFormatFlagIsSignedInteger) &&
+                               (asbd.mBitsPerChannel == 16 || asbd.mBitsPerChannel == 32);
+        const UInt32 channelsPerBuffer = planar ? 1 : 2;
+        if (asbd.mChannelsPerFrame != 2 || !IsSupportedPcmSampleRate(asbd.mSampleRate) ||
+            (!float32 && !signedInt) || (flags & kAudioFormatFlagIsBigEndian) ||
+            asbd.mBytesPerFrame != channelsPerBuffer * (asbd.mBitsPerChannel / 8)) {
             return nullptr;
         }
         const bool wantSpatial = RouteMonitor::ShouldProcessAudio() &&
@@ -234,12 +261,10 @@ private:
         }
 
         CMItemCount numSamples = CMSampleBufferGetNumSamples(sb);
-        if (numSamples <= 0) return nullptr;
-
-        ScopedDspGuard guard;
-        if (!guard.entered || !PipelineCoordinator::TryAcquire(AudioPipelineKind::SampleBufferRenderer)) {
+        if (numSamples <= 0 || static_cast<uint64_t>(numSamples) > UINT32_MAX / asbd.mBytesPerFrame) {
             return nullptr;
         }
+        const size_t bytesPerBuffer = static_cast<size_t>(numSamples) * asbd.mBytesPerFrame;
 
         struct StereoABL {
             UInt32 mNumberBuffers;
@@ -257,19 +282,20 @@ private:
             kCMSampleBufferFlag_AudioBufferList_Assure16ByteAlignment,
             &retainedBlock
         );
-        if (st != noErr || srcAbl.mNumberBuffers == 0 || srcAbl.mNumberBuffers > 2) {
+        if (st != noErr || srcAbl.mNumberBuffers != (planar ? 2 : 1)) {
             if (retainedBlock) CFRelease(retainedBlock);
             return nullptr;
         }
 
-        size_t totalBytes = 0;
         for (UInt32 i = 0; i < srcAbl.mNumberBuffers; ++i) {
-            totalBytes += srcAbl.mBuffers[i].mDataByteSize;
+            const AudioBuffer &buffer = srcAbl.mBuffers[i];
+            if (!buffer.mData || buffer.mNumberChannels != channelsPerBuffer ||
+                buffer.mDataByteSize < bytesPerBuffer) {
+                if (retainedBlock) CFRelease(retainedBlock);
+                return nullptr;
+            }
         }
-        if (totalBytes == 0) {
-            if (retainedBlock) CFRelease(retainedBlock);
-            return nullptr;
-        }
+        const size_t totalBytes = bytesPerBuffer * srcAbl.mNumberBuffers;
 
         CMBlockBufferRef outBlock = nullptr;
         st = CMBlockBufferCreateWithMemoryBlock(kCFAllocatorDefault,
@@ -299,38 +325,34 @@ private:
         dstAbl.mNumberBuffers = srcAbl.mNumberBuffers;
         size_t offset = 0;
         for (UInt32 i = 0; i < srcAbl.mNumberBuffers; ++i) {
-            UInt32 sz = srcAbl.mBuffers[i].mDataByteSize;
-            std::memcpy(dstPtr + offset, srcAbl.mBuffers[i].mData, sz);
-            dstAbl.mBuffers[i].mNumberChannels = srcAbl.mBuffers[i].mNumberChannels;
-            dstAbl.mBuffers[i].mDataByteSize = sz;
+            std::memcpy(dstPtr + offset, srcAbl.mBuffers[i].mData, bytesPerBuffer);
+            dstAbl.mBuffers[i].mNumberChannels = channelsPerBuffer;
+            dstAbl.mBuffers[i].mDataByteSize = static_cast<UInt32>(bytesPerBuffer);
             dstAbl.mBuffers[i].mData = dstPtr + offset;
-            offset += sz;
+            offset += bytesPerBuffer;
         }
 
         if (retainedBlock) CFRelease(retainedBlock);
 
-        dsp_->ProcessAudioBufferList(reinterpret_cast<AudioBufferList *>(&dstAbl),
-                                     static_cast<uint32_t>(numSamples),
-                                     asbd,
-                                     wantSpatial,
-                                     CurrentDspParamsFromConfig());
-
         CMSampleBufferRef outSb = nullptr;
-        CMTime pts = CMSampleBufferGetPresentationTimeStamp(sb);
-        st = CMAudioSampleBufferCreateReadyWithPacketDescriptions(
-            kCFAllocatorDefault,
-            outBlock,
-            fmtDesc,
-            numSamples,
-            pts,
-            nullptr,
-            &outSb
-        );
+        st = CreatePcmSampleBuffer(outBlock, fmtDesc, asbd, numSamples,
+                                   CMSampleBufferGetPresentationTimeStamp(sb), &outSb);
         CFRelease(outBlock);
         if (st != noErr || !outSb) {
             return nullptr;
         }
 
+        // Claim the pipeline only after Core Media has accepted our replacement.
+        ScopedDspGuard guard;
+        if (!guard.entered || !PipelineCoordinator::TryAcquire(AudioPipelineKind::SampleBufferRenderer)) {
+            CFRelease(outSb);
+            return nullptr;
+        }
+        dsp_->ProcessAudioBufferList(reinterpret_cast<AudioBufferList *>(&dstAbl),
+                                     static_cast<uint32_t>(numSamples),
+                                     asbd,
+                                     wantSpatial,
+                                     CurrentDspParamsFromConfig());
         CMPropagateAttachments(sb, outSb);
         return outSb;
     }
@@ -433,20 +455,6 @@ private:
             return nullptr;
         }
 
-        const bool wantSpatial = RouteMonitor::ShouldProcessAudio() &&
-                                 SpatialConfig::IsPipelineAllowed(static_cast<int>(AudioPipelineKind::SampleBufferRenderer));
-        if (dsp_ && dsp_->NeedsProcessing(wantSpatial)) {
-            ScopedDspGuard guard;
-            if (guard.entered && PipelineCoordinator::TryAcquire(AudioPipelineKind::SampleBufferRenderer)) {
-                dsp_->ProcessNonInterleavedFloat32(pcmL_.data(),
-                                                   pcmR_.data(),
-                                                   static_cast<uint32_t>(pcmL_.size()),
-                                                   converterOutAsbd_.mSampleRate,
-                                                   wantSpatial,
-                                                   CurrentDspParamsFromConfig());
-            }
-        }
-
         const size_t chanBytes = pcmL_.size() * sizeof(float);
         const size_t totalOutBytes = chanBytes * 2;
 
@@ -474,19 +482,25 @@ private:
         std::memcpy(dstPtr + chanBytes, pcmR_.data(), chanBytes);
 
         CMSampleBufferRef outSb = nullptr;
-        CMTime pts = CMSampleBufferGetPresentationTimeStamp(sb);
-        st = CMAudioSampleBufferCreateReadyWithPacketDescriptions(
-            kCFAllocatorDefault,
-            outBlock,
-            pcmFmtDesc_,
-            static_cast<CMItemCount>(pcmL_.size()),
-            pts,
-            nullptr,
-            &outSb
-        );
+        st = CreatePcmSampleBuffer(outBlock, pcmFmtDesc_, converterOutAsbd_,
+                                   static_cast<CMItemCount>(pcmL_.size()),
+                                   CMSampleBufferGetPresentationTimeStamp(sb), &outSb);
         CFRelease(outBlock);
         if (st != noErr || !outSb) {
             return nullptr;
+        }
+
+        const bool wantSpatial = RouteMonitor::ShouldProcessAudio() && pipeAllowed;
+        if (dsp_ && dsp_->NeedsProcessing(wantSpatial)) {
+            ScopedDspGuard guard;
+            if (guard.entered && PipelineCoordinator::TryAcquire(AudioPipelineKind::SampleBufferRenderer)) {
+                dsp_->ProcessNonInterleavedFloat32(reinterpret_cast<float *>(dstPtr),
+                                                   reinterpret_cast<float *>(dstPtr + chanBytes),
+                                                   static_cast<uint32_t>(pcmL_.size()),
+                                                   converterOutAsbd_.mSampleRate,
+                                                   wantSpatial,
+                                                   CurrentDspParamsFromConfig());
+            }
         }
 
         CMPropagateAttachments(sb, outSb);
