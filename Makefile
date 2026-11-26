@@ -48,6 +48,7 @@ SRCS_MM := \
 	src/RouteMonitor.mm \
 	src/WavLoader.mm \
 	src/SpatialEngine.mm \
+	src/AudioUnitBridge.mm \
 	src/OverlayUI.mm \
 	src/HookAudioUnit.mm \
 	src/HookAudioQueue.mm \

@@ -1,5 +1,7 @@
+#include "AudioUnitBridge.h"
 #include "PipelineCoordinator.h"
 #include "RouteMonitor.h"
+#include "SpatialConfig.h"
 #include "SpatialEngine.h"
 
 #import <AVFoundation/AVFoundation.h>
@@ -8,6 +10,8 @@
 #import <Foundation/Foundation.h>
 #import <objc/runtime.h>
 
+#include <algorithm>
+#include <cmath>
 #include <cstring>
 #include <memory>
 #include <mutex>
@@ -17,6 +21,8 @@ namespace spatial {
 namespace {
 
 static const void *kSpatialSbrCtxKey = &kSpatialSbrCtxKey;
+static const void *kSpatialSyncKey = &kSpatialSyncKey;
+static const void *kSpatialParentRendererKey = &kSpatialParentRendererKey;
 
 bool IsSupportedPcmSampleRate(double sr) {
     return (sr >= 47900.0 && sr <= 48100.0) || (sr >= 44000.0 && sr <= 44200.0);
@@ -33,11 +39,11 @@ bool IsSupportedCompressedFormat(AudioFormatID fmtId) {
 }
 
 OSStatus CreatePcmSampleBuffer(CMBlockBufferRef data,
-                              CMFormatDescriptionRef format,
-                              const AudioStreamBasicDescription &asbd,
-                              CMItemCount frameCount,
-                              CMTime pts,
-                              CMSampleBufferRef *outBuffer) {
+                               CMFormatDescriptionRef format,
+                               const AudioStreamBasicDescription &asbd,
+                               CMItemCount frameCount,
+                               CMTime pts,
+                               CMSampleBufferRef *outBuffer) {
     if ((asbd.mFormatFlags & kAudioFormatFlagIsNonInterleaved) == 0) {
         return CMAudioSampleBufferCreateReadyWithPacketDescriptions(
             kCFAllocatorDefault, data, format, frameCount, pts, nullptr, outBuffer);
@@ -110,6 +116,159 @@ OSStatus DecodeInputDataProc(AudioConverterRef inAudioConverter,
     return noErr;
 }
 
+bool ExtractFloatPlanarFromAudioBufferList(const AudioBufferList *abl,
+                                           const AudioStreamBasicDescription &asbd,
+                                           uint32_t frameCount,
+                                           std::vector<float> &outL,
+                                           std::vector<float> &outR) {
+    if (!abl || frameCount == 0 || asbd.mChannelsPerFrame != 2) return false;
+    const bool isFloat = (asbd.mFormatFlags & kAudioFormatFlagIsFloat) != 0;
+    const bool planar = (asbd.mFormatFlags & kAudioFormatFlagIsNonInterleaved) != 0;
+    const bool signedInt = (asbd.mFormatFlags & kAudioFormatFlagIsSignedInteger) != 0;
+
+    outL.resize(frameCount);
+    outR.resize(frameCount);
+
+    if (isFloat && asbd.mBitsPerChannel == 32) {
+        if (planar && abl->mNumberBuffers >= 2) {
+            std::memcpy(outL.data(), abl->mBuffers[0].mData, frameCount * sizeof(float));
+            std::memcpy(outR.data(), abl->mBuffers[1].mData, frameCount * sizeof(float));
+            return true;
+        }
+        if (!planar && abl->mNumberBuffers >= 1) {
+            const float *src = static_cast<const float *>(abl->mBuffers[0].mData);
+            for (uint32_t i = 0; i < frameCount; ++i) {
+                outL[i] = src[2 * i];
+                outR[i] = src[2 * i + 1];
+            }
+            return true;
+        }
+    } else if (signedInt && asbd.mBitsPerChannel == 16) {
+        constexpr float kInv32768 = 1.0f / 32768.0f;
+        if (planar && abl->mNumberBuffers >= 2) {
+            const int16_t *l = static_cast<const int16_t *>(abl->mBuffers[0].mData);
+            const int16_t *r = static_cast<const int16_t *>(abl->mBuffers[1].mData);
+            for (uint32_t i = 0; i < frameCount; ++i) {
+                outL[i] = static_cast<float>(l[i]) * kInv32768;
+                outR[i] = static_cast<float>(r[i]) * kInv32768;
+            }
+            return true;
+        }
+        if (!planar && abl->mNumberBuffers >= 1) {
+            const int16_t *src = static_cast<const int16_t *>(abl->mBuffers[0].mData);
+            for (uint32_t i = 0; i < frameCount; ++i) {
+                outL[i] = static_cast<float>(src[2 * i]) * kInv32768;
+                outR[i] = static_cast<float>(src[2 * i + 1]) * kInv32768;
+            }
+            return true;
+        }
+    } else if (signedInt && asbd.mBitsPerChannel == 32) {
+        constexpr double kInvMax = 1.0 / 2147483648.0;
+        if (planar && abl->mNumberBuffers >= 2) {
+            const int32_t *l = static_cast<const int32_t *>(abl->mBuffers[0].mData);
+            const int32_t *r = static_cast<const int32_t *>(abl->mBuffers[1].mData);
+            for (uint32_t i = 0; i < frameCount; ++i) {
+                outL[i] = static_cast<float>(static_cast<double>(l[i]) * kInvMax);
+                outR[i] = static_cast<float>(static_cast<double>(r[i]) * kInvMax);
+            }
+            return true;
+        }
+        if (!planar && abl->mNumberBuffers >= 1) {
+            const int32_t *src = static_cast<const int32_t *>(abl->mBuffers[0].mData);
+            for (uint32_t i = 0; i < frameCount; ++i) {
+                outL[i] = static_cast<float>(static_cast<double>(src[2 * i]) * kInvMax);
+                outR[i] = static_cast<float>(static_cast<double>(src[2 * i + 1]) * kInvMax);
+            }
+            return true;
+        }
+    }
+
+    return false;
+}
+
+} // namespace
+} // namespace spatial
+
+@interface SpatialSyncHolder : NSObject
+@property (nonatomic, weak) AVSampleBufferRenderSynchronizer *synchronizer;
+@end
+
+@implementation SpatialSyncHolder
+@end
+
+@interface SpatialParentRendererHolder : NSObject
+@property (nonatomic, weak) AVSampleBufferAudioRenderer *renderer;
+@end
+
+@implementation SpatialParentRendererHolder
+@end
+
+namespace spatial {
+namespace {
+
+void BindSynchronizerToRenderer(AVSampleBufferAudioRenderer *renderer, AVSampleBufferRenderSynchronizer *sync) {
+    if (!renderer || !sync) return;
+    @synchronized(renderer) {
+        SpatialSyncHolder *holder = objc_getAssociatedObject(renderer, kSpatialSyncKey);
+        if (!holder) {
+            holder = [[SpatialSyncHolder alloc] init];
+            objc_setAssociatedObject(renderer, kSpatialSyncKey, holder, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        }
+        holder.synchronizer = sync;
+    }
+    CMTimebaseRef tb = sync.timebase;
+    if (tb) {
+        AudioUnitBridge::Shared().SetSynchronizerTimebase(tb);
+    }
+    AudioUnitBridge::Shared().SetVolume(renderer.volume);
+    AudioUnitBridge::Shared().SetMuted(renderer.muted);
+}
+
+void UnbindSynchronizerFromRenderer(AVSampleBufferAudioRenderer *renderer, AVSampleBufferRenderSynchronizer *sync, CMTime atTime) {
+    if (!renderer) return;
+    @synchronized(renderer) {
+        SpatialSyncHolder *holder = objc_getAssociatedObject(renderer, kSpatialSyncKey);
+        if (holder && (!sync || holder.synchronizer == sync)) {
+            holder.synchronizer = nil;
+        }
+    }
+    if (sync) {
+        if (CMTIME_IS_NUMERIC(atTime)) {
+            AudioUnitBridge::Shared().FlushFromTime(CMTimeGetSeconds(atTime));
+        } else {
+            AudioUnitBridge::Shared().FlushAll();
+        }
+        AudioUnitBridge::Shared().ClearSynchronizerTimebase(sync.timebase);
+    }
+}
+
+AVSampleBufferRenderSynchronizer *GetBoundSynchronizer(AVSampleBufferAudioRenderer *renderer) {
+    if (!renderer) return nil;
+    @synchronized(renderer) {
+        SpatialSyncHolder *holder = objc_getAssociatedObject(renderer, kSpatialSyncKey);
+        return holder ? holder.synchronizer : nil;
+    }
+}
+
+bool ShouldBridgeSampleBuffer(AVSampleBufferAudioRenderer *renderer) {
+    if (!renderer) return false;
+    if (SpatialConfig::HookMode() != HookSelectionMode::ForceBridge) return false;
+    if (!RouteMonitor::IsRouteEligible()) return false;
+
+    AVSampleBufferRenderSynchronizer *sync = GetBoundSynchronizer(renderer);
+    if (!sync || !sync.timebase) return false;
+
+    const float rate = sync.rate;
+    // Allow pre-buffering at rate == 0.0 and normal 1.0x playback; fall back natively for variable speed.
+    const bool normalSpeed = (std::fabs(rate) < 0.01f) || (std::fabs(rate - 1.0f) <= 0.05f);
+    if (!normalSpeed) return false;
+
+    AudioUnitBridge::Shared().SetSynchronizerTimebase(sync.timebase);
+    AudioUnitBridge::Shared().SetVolume(renderer.volume);
+    AudioUnitBridge::Shared().SetMuted(renderer.muted);
+    return true;
+}
+
 class SampleBufferRendererCtx {
 public:
     SampleBufferRendererCtx() : dsp_(std::make_unique<SpatialStreamProcessor>()) {
@@ -128,7 +287,7 @@ public:
     }
 
     // Returns a newly retained CMSampleBufferRef if transformed, or nullptr to pass original untouched.
-    CMSampleBufferRef ProcessSampleBuffer(CMSampleBufferRef sb) {
+    CMSampleBufferRef ProcessSampleBuffer(CMSampleBufferRef sb, bool useBridge) {
         if (!sb || !CMSampleBufferIsValid(sb) || !CMSampleBufferDataIsReady(sb)) {
             return nullptr;
         }
@@ -144,11 +303,11 @@ public:
         std::lock_guard<std::mutex> lock(mutex_);
 
         if (inAsbd->mFormatID == kAudioFormatLinearPCM) {
-            return ProcessLinearPcmLocked(sb, fmtDesc, *inAsbd);
+            return ProcessLinearPcmLocked(sb, fmtDesc, *inAsbd, useBridge);
         }
 
         if (IsSupportedCompressedFormat(inAsbd->mFormatID)) {
-            return ProcessCompressedLocked(sb, fmtDesc, *inAsbd);
+            return ProcessCompressedLocked(sb, fmtDesc, *inAsbd, useBridge);
         }
 
         return nullptr;
@@ -242,7 +401,8 @@ private:
 
     CMSampleBufferRef ProcessLinearPcmLocked(CMSampleBufferRef sb,
                                              CMFormatDescriptionRef fmtDesc,
-                                             const AudioStreamBasicDescription &asbd) {
+                                             const AudioStreamBasicDescription &asbd,
+                                             bool useBridge) {
         const auto flags = asbd.mFormatFlags;
         const bool planar = (flags & kAudioFormatFlagIsNonInterleaved) != 0;
         const bool float32 = (flags & kAudioFormatFlagIsFloat) && asbd.mBitsPerChannel == 32;
@@ -254,9 +414,10 @@ private:
             asbd.mBytesPerFrame != channelsPerBuffer * (asbd.mBitsPerChannel / 8)) {
             return nullptr;
         }
+
         const bool wantSpatial = RouteMonitor::ShouldProcessAudio() &&
                                  SpatialConfig::IsPipelineAllowed(static_cast<int>(AudioPipelineKind::SampleBufferRenderer));
-        if (!dsp_ || !dsp_->NeedsProcessing(wantSpatial)) {
+        if (!useBridge && (!dsp_ || !dsp_->NeedsProcessing(wantSpatial))) {
             return nullptr;
         }
 
@@ -321,6 +482,35 @@ private:
             return nullptr;
         }
 
+        const CMTime pts = CMSampleBufferGetPresentationTimeStamp(sb);
+
+        if (useBridge) {
+            const double ptsSec = CMTimeGetSeconds(pts);
+            if (std::isfinite(ptsSec) &&
+                ExtractFloatPlanarFromAudioBufferList(reinterpret_cast<const AudioBufferList *>(&srcAbl),
+                                                      asbd,
+                                                      static_cast<uint32_t>(numSamples),
+                                                      pcmL_,
+                                                      pcmR_)) {
+                if (retainedBlock) CFRelease(retainedBlock);
+                AudioUnitBridge::Shared().PushAudio(ptsSec,
+                                                    asbd.mSampleRate,
+                                                    pcmL_.data(),
+                                                    pcmR_.data(),
+                                                    static_cast<uint32_t>(numSamples));
+                // Enqueue silent PCM buffer to keep AVSampleBufferRenderSynchronizer timeline/A-V sync intact.
+                std::memset(dstPtr, 0, totalBytes);
+                CMSampleBufferRef outSb = nullptr;
+                st = CreatePcmSampleBuffer(outBlock, fmtDesc, asbd, numSamples, pts, &outSb);
+                CFRelease(outBlock);
+                if (st != noErr || !outSb) {
+                    return nullptr;
+                }
+                CMPropagateAttachments(sb, outSb);
+                return outSb;
+            }
+        }
+
         StereoABL dstAbl{};
         dstAbl.mNumberBuffers = srcAbl.mNumberBuffers;
         size_t offset = 0;
@@ -335,8 +525,7 @@ private:
         if (retainedBlock) CFRelease(retainedBlock);
 
         CMSampleBufferRef outSb = nullptr;
-        st = CreatePcmSampleBuffer(outBlock, fmtDesc, asbd, numSamples,
-                                   CMSampleBufferGetPresentationTimeStamp(sb), &outSb);
+        st = CreatePcmSampleBuffer(outBlock, fmtDesc, asbd, numSamples, pts, &outSb);
         CFRelease(outBlock);
         if (st != noErr || !outSb) {
             return nullptr;
@@ -359,14 +548,16 @@ private:
 
     CMSampleBufferRef ProcessCompressedLocked(CMSampleBufferRef sb,
                                               CMFormatDescriptionRef fmtDesc,
-                                              const AudioStreamBasicDescription &inAsbd) {
+                                              const AudioStreamBasicDescription &inAsbd,
+                                              bool useBridge) {
         // Only decode stereo (or implicit-channel) streams; pass through multichannel/mono untouched.
         if (inAsbd.mChannelsPerFrame != 0 && inAsbd.mChannelsPerFrame != 2) {
             return nullptr;
         }
 
         const bool pipeAllowed = SpatialConfig::IsPipelineAllowed(static_cast<int>(AudioPipelineKind::SampleBufferRenderer));
-        if (!converter_ && (!RouteMonitor::ShouldProcessAudio() || !pipeAllowed)) {
+        const bool wantDecode = useBridge || (pipeAllowed && RouteMonitor::ShouldProcessAudio());
+        if (!converter_ && !wantDecode) {
             return nullptr;
         }
 
@@ -478,13 +669,35 @@ private:
             return nullptr;
         }
 
+        const CMTime pts = CMSampleBufferGetPresentationTimeStamp(sb);
+
+        if (useBridge) {
+            const double ptsSec = CMTimeGetSeconds(pts);
+            if (std::isfinite(ptsSec)) {
+                AudioUnitBridge::Shared().PushAudio(ptsSec,
+                                                    converterOutAsbd_.mSampleRate,
+                                                    pcmL_.data(),
+                                                    pcmR_.data(),
+                                                    static_cast<uint32_t>(pcmL_.size()));
+                std::memset(dstPtr, 0, totalOutBytes);
+                CMSampleBufferRef outSb = nullptr;
+                st = CreatePcmSampleBuffer(outBlock, pcmFmtDesc_, converterOutAsbd_,
+                                           static_cast<CMItemCount>(pcmL_.size()), pts, &outSb);
+                CFRelease(outBlock);
+                if (st != noErr || !outSb) {
+                    return nullptr;
+                }
+                CMPropagateAttachments(sb, outSb);
+                return outSb;
+            }
+        }
+
         std::memcpy(dstPtr, pcmL_.data(), chanBytes);
         std::memcpy(dstPtr + chanBytes, pcmR_.data(), chanBytes);
 
         CMSampleBufferRef outSb = nullptr;
         st = CreatePcmSampleBuffer(outBlock, pcmFmtDesc_, converterOutAsbd_,
-                                   static_cast<CMItemCount>(pcmL_.size()),
-                                   CMSampleBufferGetPresentationTimeStamp(sb), &outSb);
+                                   static_cast<CMItemCount>(pcmL_.size()), pts, &outSb);
         CFRelease(outBlock);
         if (st != noErr || !outSb) {
             return nullptr;
@@ -526,16 +739,32 @@ private:
 @interface SpatialSBRHolder : NSObject {
 @public
     std::unique_ptr<spatial::SampleBufferRendererCtx> ctx;
+    id autoFlushObserver;
 }
 @end
 
 @implementation SpatialSBRHolder
-- (instancetype)init {
+- (instancetype)initWithRenderer:(AVSampleBufferAudioRenderer *)renderer {
     self = [super init];
     if (self) {
         ctx = std::make_unique<spatial::SampleBufferRendererCtx>();
+        if (renderer) {
+            autoFlushObserver = [[NSNotificationCenter defaultCenter]
+                addObserverForName:AVSampleBufferAudioRendererWasFlushedAutomaticallyNotification
+                            object:renderer
+                             queue:nil
+                        usingBlock:^(__unused NSNotification * _Nonnull note) {
+                spatial::AudioUnitBridge::Shared().FlushAll();
+            }];
+        }
     }
     return self;
+}
+- (void)dealloc {
+    if (autoFlushObserver) {
+        [[NSNotificationCenter defaultCenter] removeObserver:autoFlushObserver];
+        autoFlushObserver = nil;
+    }
 }
 @end
 
@@ -547,7 +776,7 @@ SampleBufferRendererCtx *GetRendererCtx(AVSampleBufferAudioRenderer *renderer) {
     @synchronized(renderer) {
         SpatialSBRHolder *holder = objc_getAssociatedObject(renderer, kSpatialSbrCtxKey);
         if (!holder) {
-            holder = [[SpatialSBRHolder alloc] init];
+            holder = [[SpatialSBRHolder alloc] initWithRenderer:renderer];
             objc_setAssociatedObject(renderer, kSpatialSbrCtxKey, holder, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
         }
         return holder->ctx.get();
@@ -561,13 +790,17 @@ SampleBufferRendererCtx *GetRendererCtx(AVSampleBufferAudioRenderer *renderer) {
 - (void)spatial_enqueueSampleBuffer:(CMSampleBufferRef)sampleBuffer;
 - (void)spatial_flush;
 - (void)spatial_flushFromSourceTime:(CMTime)time completionHandler:(void (^)(BOOL flushSucceeded))completionHandler;
+- (void)spatial_setVolume:(float)volume;
+- (void)spatial_setMuted:(BOOL)muted;
+- (id)spatial_sampleBufferReceiver;
 @end
 
 @implementation AVSampleBufferAudioRenderer (SpatialAudioHook)
 
 - (void)spatial_enqueueSampleBuffer:(CMSampleBufferRef)sampleBuffer {
     spatial::SampleBufferRendererCtx *ctx = spatial::GetRendererCtx(self);
-    CMSampleBufferRef processed = ctx ? ctx->ProcessSampleBuffer(sampleBuffer) : nullptr;
+    const bool useBridge = spatial::ShouldBridgeSampleBuffer(self);
+    CMSampleBufferRef processed = ctx ? ctx->ProcessSampleBuffer(sampleBuffer, useBridge) : nullptr;
     if (processed) {
         [self spatial_enqueueSampleBuffer:processed];
         CFRelease(processed);
@@ -581,6 +814,7 @@ SampleBufferRendererCtx *GetRendererCtx(AVSampleBufferAudioRenderer *renderer) {
     if (ctx) {
         ctx->Reset();
     }
+    spatial::AudioUnitBridge::Shared().FlushAll();
     [self spatial_flush];
 }
 
@@ -589,7 +823,88 @@ SampleBufferRendererCtx *GetRendererCtx(AVSampleBufferAudioRenderer *renderer) {
     if (ctx) {
         ctx->Reset();
     }
+    if (CMTIME_IS_NUMERIC(time)) {
+        spatial::AudioUnitBridge::Shared().FlushFromTime(CMTimeGetSeconds(time));
+    } else {
+        spatial::AudioUnitBridge::Shared().FlushAll();
+    }
     [self spatial_flushFromSourceTime:time completionHandler:completionHandler];
+}
+
+- (void)spatial_setVolume:(float)volume {
+    spatial::AudioUnitBridge::Shared().SetVolume(volume);
+    [self spatial_setVolume:volume];
+}
+
+- (void)spatial_setMuted:(BOOL)muted {
+    spatial::AudioUnitBridge::Shared().SetMuted(muted ? true : false);
+    [self spatial_setMuted:muted];
+}
+
+- (id)spatial_sampleBufferReceiver {
+    id receiver = [self spatial_sampleBufferReceiver];
+    if (receiver) {
+        SpatialParentRendererHolder *holder = objc_getAssociatedObject(receiver, spatial::kSpatialParentRendererKey);
+        if (!holder) {
+            holder = [[SpatialParentRendererHolder alloc] init];
+            objc_setAssociatedObject(receiver, spatial::kSpatialParentRendererKey, holder, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        }
+        holder.renderer = self;
+    }
+    return receiver;
+}
+
+@end
+
+@interface AVSampleBufferRenderSynchronizer (SpatialAudioHook)
+- (void)spatial_addRenderer:(id<AVQueuedSampleBufferRendering>)renderer;
+- (void)spatial_removeRenderer:(id<AVQueuedSampleBufferRendering>)renderer
+                        atTime:(CMTime)time
+             completionHandler:(void (^)(BOOL didRemoveRenderer))completionHandler;
+- (void)spatial_addReceiver:(id)receiver;
+- (void)spatial_removeReceiver:(id)receiver
+                        atTime:(CMTime)time
+             completionHandler:(void (^)(BOOL didRemoveReceiver))completionHandler;
+@end
+
+@implementation AVSampleBufferRenderSynchronizer (SpatialAudioHook)
+
+- (void)spatial_addRenderer:(id<AVQueuedSampleBufferRendering>)renderer {
+    [self spatial_addRenderer:renderer];
+    if ([renderer isKindOfClass:[AVSampleBufferAudioRenderer class]]) {
+        spatial::BindSynchronizerToRenderer((AVSampleBufferAudioRenderer *)renderer, self);
+    }
+}
+
+- (void)spatial_removeRenderer:(id<AVQueuedSampleBufferRendering>)renderer
+                        atTime:(CMTime)time
+             completionHandler:(void (^)(BOOL didRemoveRenderer))completionHandler {
+    if ([renderer isKindOfClass:[AVSampleBufferAudioRenderer class]]) {
+        spatial::UnbindSynchronizerFromRenderer((AVSampleBufferAudioRenderer *)renderer, self, time);
+    }
+    [self spatial_removeRenderer:renderer atTime:time completionHandler:completionHandler];
+}
+
+- (void)spatial_addReceiver:(id)receiver {
+    [self spatial_addReceiver:receiver];
+    if (receiver) {
+        SpatialParentRendererHolder *holder = objc_getAssociatedObject(receiver, spatial::kSpatialParentRendererKey);
+        if (holder && holder.renderer) {
+            spatial::BindSynchronizerToRenderer(holder.renderer, self);
+        }
+    }
+}
+
+- (void)spatial_removeReceiver:(id)receiver
+                        atTime:(CMTime)time
+             completionHandler:(void (^)(BOOL didRemoveReceiver))completionHandler {
+    if (receiver) {
+        SpatialParentRendererHolder *holder = objc_getAssociatedObject(receiver, spatial::kSpatialParentRendererKey);
+        if (holder && holder.renderer) {
+            spatial::UnbindSynchronizerFromRenderer(holder.renderer, self, time);
+        }
+    }
+    [self spatial_removeReceiver:receiver atTime:time completionHandler:completionHandler];
 }
 
 @end
@@ -609,6 +924,20 @@ void InstallSampleBufferRendererHook() {
         swizzle([AVSampleBufferAudioRenderer class], @selector(enqueueSampleBuffer:), @selector(spatial_enqueueSampleBuffer:));
         swizzle([AVSampleBufferAudioRenderer class], @selector(flush), @selector(spatial_flush));
         swizzle([AVSampleBufferAudioRenderer class], @selector(flushFromSourceTime:completionHandler:), @selector(spatial_flushFromSourceTime:completionHandler:));
+        swizzle([AVSampleBufferAudioRenderer class], @selector(setVolume:), @selector(spatial_setVolume:));
+        swizzle([AVSampleBufferAudioRenderer class], @selector(setMuted:), @selector(spatial_setMuted:));
+        if ([AVSampleBufferAudioRenderer instancesRespondToSelector:@selector(sampleBufferReceiver)]) {
+            swizzle([AVSampleBufferAudioRenderer class], @selector(sampleBufferReceiver), @selector(spatial_sampleBufferReceiver));
+        }
+
+        swizzle([AVSampleBufferRenderSynchronizer class], @selector(addRenderer:), @selector(spatial_addRenderer:));
+        swizzle([AVSampleBufferRenderSynchronizer class], @selector(removeRenderer:atTime:completionHandler:), @selector(spatial_removeRenderer:atTime:completionHandler:));
+        if ([AVSampleBufferRenderSynchronizer instancesRespondToSelector:@selector(addReceiver:)]) {
+            swizzle([AVSampleBufferRenderSynchronizer class], @selector(addReceiver:), @selector(spatial_addReceiver:));
+        }
+        if ([AVSampleBufferRenderSynchronizer instancesRespondToSelector:@selector(removeReceiver:atTime:completionHandler:)]) {
+            swizzle([AVSampleBufferRenderSynchronizer class], @selector(removeReceiver:atTime:completionHandler:), @selector(spatial_removeReceiver:atTime:completionHandler:));
+        }
     });
 }
 

@@ -13,6 +13,7 @@
 #include <memory>
 #include <mutex>
 #include <unordered_map>
+#include <unordered_set>
 
 namespace spatial {
 namespace {
@@ -29,6 +30,7 @@ struct AudioUnitHookCtx {
 
 std::mutex gAuMutex;
 std::unordered_map<AudioUnit, std::unique_ptr<AudioUnitHookCtx>> gAuContexts;
+std::unordered_set<AudioUnit> gBridgeUnits;
 
 using FnAudioUnitSetProperty = OSStatus (*)(AudioUnit, AudioUnitPropertyID, AudioUnitScope, AudioUnitElement, const void *, UInt32);
 using FnAUGraphSetNodeInputCallback = OSStatus (*)(AUGraph, AUNode, UInt32, const AURenderCallbackStruct *);
@@ -42,8 +44,14 @@ FnAudioUnitInitialize           orig_AudioUnitInitialize = nullptr;
 FnAudioOutputUnitStart          orig_AudioOutputUnitStart = nullptr;
 FnAudioComponentInstanceDispose orig_AudioComponentInstanceDispose = nullptr;
 
-bool IsTerminalOutputUnit(AudioUnit unit) {
+bool IsBridgeUnit(AudioUnit unit) {
     if (!unit) return false;
+    std::lock_guard<std::mutex> lock(gAuMutex);
+    return gBridgeUnits.find(unit) != gBridgeUnits.end();
+}
+
+bool IsTerminalOutputUnit(AudioUnit unit) {
+    if (!unit || IsBridgeUnit(unit)) return false;
     AudioComponent comp = AudioComponentInstanceGetComponent(unit);
     if (!comp) return false;
     AudioComponentDescription desc{};
@@ -356,6 +364,18 @@ OSStatus hooked_AudioComponentInstanceDispose(AudioComponentInstance inInstance)
 @end
 
 namespace spatial {
+
+void RegisterBridgeAudioUnit(AudioUnit unit) {
+    if (!unit) return;
+    std::lock_guard<std::mutex> lock(gAuMutex);
+    gBridgeUnits.insert(unit);
+}
+
+void UnregisterBridgeAudioUnit(AudioUnit unit) {
+    if (!unit) return;
+    std::lock_guard<std::mutex> lock(gAuMutex);
+    gBridgeUnits.erase(unit);
+}
 
 void InstallAudioUnitHook() {
     struct rebinding rebs[] = {

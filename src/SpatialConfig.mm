@@ -104,6 +104,7 @@ void SpatialConfig::Initialize() {
         if ([defaults objectForKey:kKeyHookMode] != nil) {
             NSInteger savedHookMode = [defaults integerForKey:kKeyHookMode];
             if (savedHookMode == static_cast<NSInteger>(HookSelectionMode::Auto) ||
+                savedHookMode == static_cast<NSInteger>(HookSelectionMode::ForceBridge) ||
                 savedHookMode == static_cast<NSInteger>(HookSelectionMode::Custom)) {
                 hookMode = static_cast<int>(savedHookMode);
             }
@@ -175,12 +176,17 @@ float SpatialConfig::SpatialWidth() {
 
 HookSelectionMode SpatialConfig::HookMode() {
     int raw = gHookMode.load(std::memory_order_relaxed);
-    return (raw == static_cast<int>(HookSelectionMode::Custom)) ? HookSelectionMode::Custom : HookSelectionMode::Auto;
+    if (raw == static_cast<int>(HookSelectionMode::ForceBridge)) return HookSelectionMode::ForceBridge;
+    if (raw == static_cast<int>(HookSelectionMode::Custom)) return HookSelectionMode::Custom;
+    return HookSelectionMode::Auto;
 }
 
 bool SpatialConfig::IsPipelineAllowed(int pipelineKindInt) {
+    if (pipelineKindInt == 5) {
+        return HookMode() == HookSelectionMode::ForceBridge;
+    }
     if (pipelineKindInt < 1 || pipelineKindInt > 4) return false;
-    if (HookMode() == HookSelectionMode::Auto) return true;
+    if (HookMode() != HookSelectionMode::Custom) return true;
     return gCustomPipes[pipelineKindInt].load(std::memory_order_relaxed);
 }
 
@@ -263,7 +269,12 @@ void SpatialConfig::ResetTuning() {
 
 void SpatialConfig::SetHookMode(HookSelectionMode mode) {
     Initialize();
-    int desired = (mode == HookSelectionMode::Custom) ? static_cast<int>(HookSelectionMode::Custom) : static_cast<int>(HookSelectionMode::Auto);
+    int desired = static_cast<int>(HookSelectionMode::Auto);
+    if (mode == HookSelectionMode::ForceBridge) {
+        desired = static_cast<int>(HookSelectionMode::ForceBridge);
+    } else if (mode == HookSelectionMode::Custom) {
+        desired = static_cast<int>(HookSelectionMode::Custom);
+    }
     int prev = gHookMode.exchange(desired, std::memory_order_acq_rel);
     if (prev != desired) {
         [[NSUserDefaults standardUserDefaults] setInteger:desired forKey:kKeyHookMode];

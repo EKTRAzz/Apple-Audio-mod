@@ -11,6 +11,7 @@ enum class AudioPipelineKind : int {
     AudioQueue           = 2,  // AudioToolbox AudioQueue (Linear PCM)
     AVPlayer             = 3,  // AVFoundation AVPlayer / AVQueuePlayer (MTAudioProcessingTap)
     SampleBufferRenderer = 4,  // AVFoundation AVSampleBufferAudioRenderer (PCM & in-process AAC/Opus decode)
+    AudioUnitBridge      = 5,  // Forced AVSampleBufferAudioRenderer -> RemoteIO AudioUnit low-latency bridge
 };
 
 // Single-Winner Exclusive Pipeline Coordinator:

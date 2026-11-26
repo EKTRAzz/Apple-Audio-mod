@@ -17,8 +17,9 @@ enum class ButtonEdge : int {
 };
 
 enum class HookSelectionMode : int {
-    Auto   = 0,
-    Custom = 1,
+    Auto        = 0,
+    ForceBridge = 1,
+    Custom      = 2,
 };
 
 enum class HrirSource : int {

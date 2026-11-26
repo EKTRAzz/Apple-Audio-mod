@@ -539,7 +539,7 @@ shouldRecognizeSimultaneouslyWithGestureRecognizer:(UIGestureRecognizer *)otherG
     hookHeader.textColor = [UIColor secondaryLabelColor];
     [hookStack addArrangedSubview:hookHeader];
 
-    UISegmentedControl *hookSeg = [[UISegmentedControl alloc] initWithItems:@[@"Auto (Single-Winner)", @"Custom"]];
+    UISegmentedControl *hookSeg = [[UISegmentedControl alloc] initWithItems:@[@"Auto", @"Force Bridge", @"Custom"]];
     [hookSeg addTarget:self action:@selector(onHookModeChanged:) forControlEvents:UIControlEventValueChanged];
     [hookStack addArrangedSubview:hookSeg];
 
@@ -547,7 +547,7 @@ shouldRecognizeSimultaneouslyWithGestureRecognizer:(UIGestureRecognizer *)otherG
     hookHint.text = @"Automatically locks onto the active audio pipeline.";
     hookHint.font = [UIFont systemFontOfSize:11.5 weight:UIFontWeightRegular];
     hookHint.textColor = [UIColor secondaryLabelColor];
-    hookHint.numberOfLines = 2;
+    hookHint.numberOfLines = 3;
     [hookStack addArrangedSubview:hookHint];
 
     UIStackView *customPipes = [[UIStackView alloc] init];
@@ -921,6 +921,9 @@ shouldRecognizeSimultaneouslyWithGestureRecognizer:(UIGestureRecognizer *)otherG
         case spatial::AudioPipelineKind::SampleBufferRenderer:
             name = @"SampleBufferRenderer";
             break;
+        case spatial::AudioPipelineKind::AudioUnitBridge:
+            name = @"SampleBuffer -> AudioUnit Bridge";
+            break;
         case spatial::AudioPipelineKind::None:
         default:
             return @"Idle (None)";
@@ -1010,12 +1013,22 @@ shouldRecognizeSimultaneouslyWithGestureRecognizer:(UIGestureRecognizer *)otherG
     [self refreshTuningLabelsOnly];
 
     // 4. Hook / Pipeline mode & switches
-    NSInteger hookIdx = (hookMode == spatial::HookSelectionMode::Custom) ? 1 : 0;
+    NSInteger hookIdx = 0;
+    if (hookMode == spatial::HookSelectionMode::ForceBridge) {
+        hookIdx = 1;
+    } else if (hookMode == spatial::HookSelectionMode::Custom) {
+        hookIdx = 2;
+    }
     if (self.hookModeSegmentedControl.selectedSegmentIndex != hookIdx) {
         self.hookModeSegmentedControl.selectedSegmentIndex = hookIdx;
     }
     const BOOL isCustomHook = (hookMode == spatial::HookSelectionMode::Custom);
     self.hookAutoHintLabel.hidden = isCustomHook;
+    if (hookMode == spatial::HookSelectionMode::ForceBridge) {
+        self.hookAutoHintLabel.text = @"Routes YouTube Music (SampleBufferRenderer) via low-latency RemoteIO AudioUnit on headphones; falls back automatically on Speaker/AirPlay/Calls.";
+    } else {
+        self.hookAutoHintLabel.text = @"Automatically locks onto the active audio pipeline.";
+    }
     self.customHooksStack.hidden = !isCustomHook;
     for (UISwitch *sw in self.pipelineSwitches) {
         BOOL allowed = spatial::SpatialConfig::IsPipelineEnabledInCustom(static_cast<int>(sw.tag)) ? YES : NO;
@@ -1398,9 +1411,12 @@ shouldRecognizeSimultaneouslyWithGestureRecognizer:(UIGestureRecognizer *)otherG
 }
 
 - (void)onHookModeChanged:(UISegmentedControl *)sender {
-    spatial::HookSelectionMode mode = (sender.selectedSegmentIndex == 1)
-        ? spatial::HookSelectionMode::Custom
-        : spatial::HookSelectionMode::Auto;
+    spatial::HookSelectionMode mode = spatial::HookSelectionMode::Auto;
+    if (sender.selectedSegmentIndex == 1) {
+        mode = spatial::HookSelectionMode::ForceBridge;
+    } else if (sender.selectedSegmentIndex == 2) {
+        mode = spatial::HookSelectionMode::Custom;
+    }
     spatial::SpatialConfig::SetHookMode(mode);
     [self refreshAllState];
 }

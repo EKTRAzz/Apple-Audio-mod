@@ -9,7 +9,7 @@ namespace spatial {
 namespace {
 std::atomic<int> gActivePipeline{static_cast<int>(AudioPipelineKind::None)};
 std::atomic<uint64_t> gLastAudioTimeNs{0};
-std::atomic<int> gStreamCounts[5] = { {0}, {0}, {0}, {0}, {0} };
+std::atomic<int> gStreamCounts[6] = { {0}, {0}, {0}, {0}, {0}, {0} };
 
 // Release exclusive lock if the winning pipeline has not processed audio for 1.5 seconds.
 constexpr uint64_t kIdleReleaseTimeoutNs = 1500000000ULL;
@@ -88,14 +88,14 @@ bool PipelineCoordinator::TryAcquire(AudioPipelineKind kind) {
 
 void PipelineCoordinator::RegisterStream(AudioPipelineKind kind) {
     int idx = static_cast<int>(kind);
-    if (idx >= 1 && idx <= 4) {
+    if (idx >= 1 && idx <= 5) {
         gStreamCounts[idx].fetch_add(1, std::memory_order_relaxed);
     }
 }
 
 void PipelineCoordinator::UnregisterStream(AudioPipelineKind kind) {
     int idx = static_cast<int>(kind);
-    if (idx < 1 || idx > 4) return;
+    if (idx < 1 || idx > 5) return;
 
     int prev = gStreamCounts[idx].fetch_sub(1, std::memory_order_acq_rel);
     if (prev <= 1) {

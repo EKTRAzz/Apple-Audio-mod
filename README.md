@@ -21,7 +21,7 @@
      - สวิตช์ **Enable Spatial Audio** (เปิด/ปิดการประมวลผล โดยยังคงระบบ Auto-Bypass เมื่อออกลำโพงเครื่อง/โทรอัตโนมัติ)
      - **HRIR Profile & Mode**: สลับระหว่าง `Apple Pro 2` กับไฟล์ `.wav` ที่นำเข้าจากแอป Files เองได้ (รองรับ 14-ch HeSuVi, 4-ch True-Stereo และ 2-ch Stereo) พร้อมเลือก `Matrix (Upmix)` / `Front (1:1)` แบบเรียลไทม์
      - **DSP Tuning**: ปรับ `Spatial Mix` (`0%–100%`), `Output Gain` (`-6.0` ถึง `+4.0 dB`), `Spatial Width` (`50%–180%`) พร้อมปุ่ม `Reset`
-     - **Audio Hooks**: สลับระหว่าง `Auto (Single-Winner)` หรือ `Custom` เพื่อเปิด/ปิดการ Hook รายท่อ (`AudioUnit`, `AudioQueue`, `AVPlayer`, `SampleBufferRenderer`) ได้เอง
+     - **Audio Hooks**: เลือกได้ 3 โหมด: **`Auto`** (Single-Winner อัตโนมัติ), **`Force Bridge`** (ดึงเสียง YouTube Music `SampleBufferRenderer` มารันผ่าน `RemoteIO AudioUnit` ลดดีเลย์คิวจาก 2–5 วินาทีเหลือ ~5–20 ms พร้อมสลับกลับอัตโนมัติเมื่อออกลำโพง/AirPlay/สายโทร) หรือ **`Custom`** (เปิด/ปิดท่อเสียงรายตัว)
      - แสดงสถานะสด: **State** (Active หรือเหตุผลที่ Bypass), **Output Route**, **Pipeline** ที่กำลังใช้งาน และ **Sample Rate**
      - บันทึกค่าทั้งหมดแยกตามแอปอัตโนมัติใน `NSUserDefaults` (และเก็บไฟล์ `.wav` ที่นำเข้าใน `Application Support`)
 
